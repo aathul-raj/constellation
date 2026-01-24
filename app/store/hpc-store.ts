@@ -2,6 +2,17 @@ import { create } from 'zustand';
 
 export type NodeStatus = 'queued' | 'running' | 'completed' | 'failed';
 
+export interface FileMetadata {
+  fileName: string;
+  fileType: string;
+  columns?: string[];
+  columnTypes?: Record<string, string>;
+  rowCount?: number;
+  sampleRows?: Record<string, string>[];
+  preview?: string;
+  schema?: Record<string, string>;
+}
+
 export interface HPCNode {
   id: string;
   name: string;
@@ -11,6 +22,12 @@ export interface HPCNode {
   in: string[];
   out: string[];
   fileId?: string; // S3 file ID for input/output file nodes
+  fileMetadata?: FileMetadata; // Analysis of uploaded file
+  parallelization?: {
+    strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
+    estimatedCores?: number; // Suggested number of cores to use
+    chunkSize?: number; // For data chunking strategies
+  };
 }
 
 export interface HPCGraph {
@@ -49,7 +66,8 @@ interface HPCStore {
   updateNodeName: (nodeId: string, name: string) => void;
   updateNodeCode: (nodeId: string, code: string) => void;
   updateNodeStatus: (nodeId: string, status: NodeStatus) => void;
-  updateNodeFile: (nodeId: string, fileId: string) => void;
+  updateNodeFile: (nodeId: string, fileId: string, metadata?: FileMetadata) => void;
+  updateNodeParallelization: (nodeId: string, parallelization: HPCNode['parallelization']) => void;
   resetAllStatuses: () => void;
   setIsRunning: (running: boolean) => void;
   setRunProgress: (progress: number) => void;
@@ -77,7 +95,7 @@ const initialGraph: HPCGraph = {
       name: "Process Data",
       type: "compute",
       status: "queued",
-      code: `def task(input_file, output_file):
+      code: `def task(inp_file, output_file):
     pass`,
       in: ["550e8400-e29b-41d4-a716-446655440000"],
       out: ["550e8400-e29b-41d4-a716-446655440002"]
@@ -141,11 +159,20 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
     }
   })),
 
-  updateNodeFile: (nodeId, fileId) => set((state) => ({
+  updateNodeFile: (nodeId, fileId, metadata) => set((state) => ({
     graph: {
       ...state.graph,
       nodes: state.graph.nodes.map((node) =>
-        node.id === nodeId ? { ...node, fileId } : node
+        node.id === nodeId ? { ...node, fileId, fileMetadata: metadata } : node
+      )
+    }
+  })),
+
+  updateNodeParallelization: (nodeId, parallelization) => set((state) => ({
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === nodeId ? { ...node, parallelization } : node
       )
     }
   })),

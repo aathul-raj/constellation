@@ -9,6 +9,11 @@ interface AIResponse {
   nodeId?: string;
   code?: string;
   name?: string;
+  parallelization?: {
+    strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
+    estimatedCores?: number;
+    chunkSize?: number;
+  };
   message?: string;
   error?: string;
 }
@@ -21,6 +26,7 @@ export default function AIChatPanel() {
     selectedNodeId,
     updateNodeCode,
     updateNodeName,
+    updateNodeParallelization,
     selectNode
   } = useHPCStore();
   const [input, setInput] = useState('');
@@ -37,6 +43,29 @@ export default function AIChatPanel() {
 
   const generateResponse = useCallback(async (userMessage: string) => {
     setIsTyping(true);
+
+    // Check if selected node is a compute node without input metadata
+    const node = selectedNodeId ? graph.nodes.find(n => n.id === selectedNodeId) : null;
+    if (node?.type === 'compute') {
+      const inputNodes = graph.nodes.filter(n => node.in.includes(n.id));
+      const hasInputMetadata = inputNodes.some(n => n.fileMetadata);
+
+      if (!hasInputMetadata && inputNodes.length > 0) {
+        setIsTyping(false);
+        addChatMessage({
+          role: 'assistant',
+          content: 'Please upload a file to the input node first. I need to know your data structure to generate code.'
+        });
+        return;
+      } else if (inputNodes.length === 0) {
+        setIsTyping(false);
+        addChatMessage({
+          role: 'assistant',
+          content: 'This compute node has no input connected. Connect an input-file node to it first.'
+        });
+        return;
+      }
+    }
 
     try {
       const res = await fetch('/api/gemini', {
@@ -65,13 +94,25 @@ export default function AIChatPanel() {
           const targetNodeId = data.nodeId || selectedNodeId;
           if (targetNodeId && data.code) {
             updateNodeCode(targetNodeId, data.code);
+
+            // Update parallelization metadata if provided
+            if (data.parallelization) {
+              updateNodeParallelization(targetNodeId, data.parallelization);
+            }
+
             // Select the node so user can see the change
             if (targetNodeId !== selectedNodeId) {
               selectNode(targetNodeId);
             }
+
+            // Format message with parallelization info
+            const parallelInfo = data.parallelization
+              ? `\n\n**Parallelization**: ${data.parallelization.strategy} (${data.parallelization.estimatedCores || 'auto'} cores)`
+              : '';
+
             addChatMessage({
               role: 'assistant',
-              content: data.message || `Updated code for node. Here's what I wrote:\n\n\`\`\`python\n${data.code}\n\`\`\``
+              content: data.message || `Updated code for node.${parallelInfo}\n\n\`\`\`python\n${data.code}\n\`\`\``
             });
           } else {
             addChatMessage({
@@ -110,7 +151,7 @@ export default function AIChatPanel() {
     } finally {
       setIsTyping(false);
     }
-  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, selectNode]);
+  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, updateNodeParallelization, selectNode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -131,6 +172,14 @@ export default function AIChatPanel() {
     ? graph.nodes.find(n => n.id === selectedNodeId)
     : null;
 
+  // Check if selected compute node has input metadata
+  const canGenerateCode = selectedNode?.type === 'compute'
+    ? (() => {
+        const inputNodes = graph.nodes.filter(n => selectedNode.in.includes(n.id));
+        return inputNodes.some(n => n.fileMetadata);
+      })()
+    : true;
+
   return (
     <div className="chat-panel">
       <div className="panel-header">
@@ -141,6 +190,9 @@ export default function AIChatPanel() {
       {selectedNode && (
         <div className="selected-node-indicator">
           Selected: <strong>{selectedNode.name}</strong> ({selectedNode.type})
+          {selectedNode.type === 'compute' && !canGenerateCode && (
+            <span className="warning-badge">⚠ No input data</span>
+          )}
         </div>
       )}
 
@@ -183,9 +235,12 @@ export default function AIChatPanel() {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={selectedNode?.type === 'compute'
-            ? "Describe the task (e.g., 'sort by date', 'filter rows where x > 10')"
-            : "Select a compute node to write code, or ask a question..."
+          placeholder={
+            selectedNode?.type === 'compute'
+              ? canGenerateCode
+                ? "Describe the task (e.g., 'sort by date', 'filter rows where x > 10')"
+                : "Upload input file first to generate code"
+              : "Select a compute node to write code, or ask a question..."
           }
           disabled={isTyping}
         />

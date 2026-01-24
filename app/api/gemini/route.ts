@@ -26,9 +26,17 @@ export async function POST(request: NextRequest) {
       ? graph?.nodes?.find((n: { id: string }) => n.id === selectedNodeId)
       : null;
 
+    // Get input file metadata for the selected node
+    const inputFileMetadata = selectedNode
+      ? graph?.nodes
+          ?.filter((n: any) => selectedNode.in?.includes(n.id))
+          ?.map((n: any) => n.fileMetadata)
+          ?.filter(Boolean)
+      : [];
+
     const systemPrompt = `You are an AI assistant for an HPC (High-Performance Computing) workflow builder.
 
-Users describe computational tasks in natural language, and you help them by generating Python code for compute nodes.
+Users describe computational tasks in natural language, and you help them write PARALLELIZABLE code that will run on distributed compute clusters.
 
 CURRENT PIPELINE STATE:
 ${graph ? JSON.stringify(graph, null, 2) : "No graph provided"}
@@ -40,12 +48,64 @@ ${selectedNode ? `SELECTED NODE:
 - Current Code:
 ${selectedNode.code || "(empty)"}` : "No node selected."}
 
+${inputFileMetadata.length > 0 ? `
+INPUT DATA CONTEXT:
+The selected node receives data from upstream nodes with the following structure:
+
+${inputFileMetadata.map((meta: any, idx: number) => `
+Input ${idx + 1}: ${meta.fileName} (${meta.fileType})
+${meta.columns ? `Columns: ${meta.columns.join(', ')}
+Column Types: ${JSON.stringify(meta.columnTypes, null, 2)}
+Row Count: ${meta.rowCount}
+Sample Data:
+${JSON.stringify(meta.sampleRows, null, 2)}` :
+meta.schema ? `Schema: ${JSON.stringify(meta.schema, null, 2)}` :
+`Preview: ${meta.preview}`}
+`).join('\n')}
+
+IMPORTANT: Generate code that works with the ACTUAL columns and data shown above.
+The 'input' parameter will contain this data structure.
+` : ''}
+
 YOUR TASK:
-When the user asks you to write code for a task (like "sort data", "filter rows", "train a model", etc.):
-1. Generate Python code using this exact function signature: def task(input, output):
-2. The 'input' parameter contains the data from upstream nodes
-3. The 'output' parameter is where you write results for downstream nodes
-4. Return your response as JSON
+Generate code that can be efficiently parallelized across multiple cores/nodes. The system will automatically distribute the workload.
+
+FUNCTION SIGNATURE:
+def task(input, output):
+    """
+    input: Data from upstream nodes (dict, list, or dataframe)
+    output: Where to write results for downstream nodes
+    """
+    # Your parallelizable code here
+
+PARALLELIZATION PRINCIPLES:
+1. **Chunk-based processing**: Process data in independent chunks that can run in parallel
+2. **No global state**: Avoid shared variables between chunks
+3. **Map-reduce patterns**: Use patterns like map, filter, reduce that parallelize naturally
+4. **Vectorized operations**: Use numpy/pandas vectorized ops instead of loops when possible
+5. **Independent operations**: Each chunk should be processable without data from other chunks
+
+EXAMPLE - Good (parallelizable, CSV input):
+def task(input, output):
+    import pandas as pd
+    # Assuming input CSV has been loaded as DataFrame
+    df = input  # or input['data'] depending on structure
+    # Vectorized operations parallelize automatically
+    df['doubled'] = df['value_column'] * 2
+    output['result'] = df
+
+EXAMPLE - Bad (not parallelizable):
+def task(input, output):
+    # Global accumulator breaks parallelism
+    total = 0
+    for item in input['data']:
+        total += item  # Sequential dependency
+    output['result'] = total
+
+HOW TO ACCESS INPUT DATA:
+- For CSV: input will be a pandas DataFrame with the columns shown above
+- For JSON: input will be a dict/list matching the schema shown above
+- Use the EXACT column names from the input data context
 
 RESPONSE FORMAT (always respond with valid JSON):
 {
@@ -53,16 +113,20 @@ RESPONSE FORMAT (always respond with valid JSON):
   "nodeId": "<node id to update, use selected node if applicable>",
   "code": "<python code if action is update_code>",
   "name": "<new name if action is update_name>",
-  "message": "<brief explanation to show the user>"
+  "parallelization": {
+    "strategy": "map" | "reduce" | "map-reduce" | "vectorized" | "sequential",
+    "estimatedCores": <number, suggest cores based on task complexity>,
+    "chunkSize": <optional, for chunked processing>
+  },
+  "message": "<brief explanation mentioning parallelization strategy>"
 }
-
-For general questions without code changes, use action: "chat" with just a message.
 
 IMPORTANT:
 - Only generate code for "compute" type nodes
 - If no compute node is selected and user asks for code, tell them to select a compute node first
-- Keep code practical and focused on the task
-- Use common Python libraries (pandas, numpy, sklearn, etc.) as needed`;
+- Always explain HOW the code will be parallelized in your message
+- Use libraries: pandas, numpy, dask, scipy, scikit-learn (these handle parallelization internally)
+- Avoid: sequential loops, global state, file I/O in the middle of processing`;
 
     const fullPrompt = `${systemPrompt}\n\nUser request: ${prompt}`;
 

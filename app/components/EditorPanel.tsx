@@ -140,31 +140,52 @@ export default function EditorPanel() {
     if (!selectedNodeId || !e.target.files?.[0]) return;
 
     const file = e.target.files[0];
-    const formData = new FormData();
-    formData.append('file', file);
-
     setUploadingNodeId(selectedNodeId);
 
     try {
-      const response = await fetch('/api/upload', {
+      // First, analyze the file
+      const analyzeFormData = new FormData();
+      analyzeFormData.append('file', file);
+
+      const analyzeResponse = await fetch('/api/analyze-file', {
         method: 'POST',
-        body: formData
+        body: analyzeFormData
       });
 
-      const data = await response.json();
+      const metadata = await analyzeResponse.json();
 
-      if (response.ok) {
-        updateNodeFile(selectedNodeId, data.key);
-        addNotification({
-          type: 'success',
-          title: 'File Uploaded',
-          message: file.name
+      // Then upload it
+      const uploadFormData = new FormData();
+      uploadFormData.append('file', file);
+
+      const uploadResponse = await fetch('/api/upload', {
+        method: 'POST',
+        body: uploadFormData
+      });
+
+      const uploadData = await uploadResponse.json();
+
+      if (uploadResponse.ok) {
+        updateNodeFile(selectedNodeId, uploadData.key, metadata);
+
+        // Create a nice summary message
+        let summary = `File "${file.name}" uploaded`;
+        if (metadata.fileType === 'csv' && metadata.columns) {
+          summary += `\n\nColumns: ${metadata.columns.join(', ')}`;
+          summary += `\nRows: ${metadata.rowCount}`;
+        } else if (metadata.fileType === 'json' && metadata.schema) {
+          summary += `\n\nSchema: ${Object.keys(metadata.schema).join(', ')}`;
+        }
+
+        addChatMessage({
+          role: 'assistant',
+          content: summary
         });
       } else {
         addNotification({
           type: 'error',
           title: 'Upload Failed',
-          message: data.error
+          message: uploadData.error
         });
       }
     } catch (error) {
@@ -292,25 +313,105 @@ export default function EditorPanel() {
               )}
             </div>
             {selectedNode.type === 'compute' && (
-              <div className="monaco-wrapper">
-                <Editor
-                  height="100%"
-                  language="python"
-                  value={selectedNode.code}
-                  onChange={handleCodeChange}
-                  theme={theme === 'dark' ? 'vs-dark' : 'light'}
-                  options={{
-                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                    fontSize: 13,
-                    lineNumbers: 'on',
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    wordWrap: 'on',
-                    padding: { top: 12 }
-                  }}
-                />
-              </div>
+              <>
+                {/* Show input data schema */}
+                {(() => {
+                  const inputNodes = graph.nodes.filter(n => selectedNode.in.includes(n.id));
+                  const inputsWithMetadata = inputNodes.filter(n => n.fileMetadata);
+
+                  if (inputsWithMetadata.length > 0) {
+                    return (
+                      <div className="input-data-schema">
+                        <div className="schema-header">
+                          <HardDrive size={14} />
+                          <span>Input Data</span>
+                        </div>
+                        {inputsWithMetadata.map((node, idx) => (
+                          <div key={node.id} className="schema-item">
+                            <strong>{node.name}:</strong>
+                            {node.fileMetadata?.columns && (
+                              <span className="schema-columns">
+                                {node.fileMetadata.columns.slice(0, 5).join(', ')}
+                                {node.fileMetadata.columns.length > 5 && ` +${node.fileMetadata.columns.length - 5} more`}
+                              </span>
+                            )}
+                            {node.fileMetadata?.rowCount && (
+                              <span className="schema-meta">({node.fileMetadata.rowCount} rows)</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Show parallelization info */}
+                {selectedNode.parallelization && (
+                  <div className="parallelization-info">
+                    <div className="parallel-strategy">
+                      <Cpu size={14} />
+                      <span className="strategy-label">{selectedNode.parallelization.strategy.toUpperCase()}</span>
+                      {selectedNode.parallelization.estimatedCores && (
+                        <span className="cores-badge">{selectedNode.parallelization.estimatedCores} cores</span>
+                      )}
+                    </div>
+                    {selectedNode.parallelization.chunkSize && (
+                      <span className="chunk-info">Chunk size: {selectedNode.parallelization.chunkSize}</span>
+                    )}
+                  </div>
+                )}
+              </>
             )}
+            {selectedNode.type === 'compute' && (() => {
+              // Check if node has input files with metadata
+              const inputNodes = graph.nodes.filter(n => selectedNode.in.includes(n.id));
+              const hasInputMetadata = inputNodes.some(n => n.fileMetadata);
+
+              if (!hasInputMetadata && inputNodes.length > 0) {
+                // Has input nodes but no file metadata
+                return (
+                  <div className="empty-state">
+                    <HardDrive size={48} strokeWidth={1} />
+                    <h3>No Input Data</h3>
+                    <p>Upload a file to the input node first.</p>
+                    <p className="empty-hint">The AI needs to know your data structure to generate code.</p>
+                  </div>
+                );
+              } else if (inputNodes.length === 0) {
+                // No input nodes connected
+                return (
+                  <div className="empty-state">
+                    <Terminal size={48} strokeWidth={1} />
+                    <h3>No Input Connected</h3>
+                    <p>This compute node has no input data source.</p>
+                    <p className="empty-hint">Connect an input-file node to this node in the graph.</p>
+                  </div>
+                );
+              }
+
+              // Has input metadata, show editor
+              return (
+                <div className="monaco-wrapper">
+                  <Editor
+                    height="100%"
+                    language="python"
+                    value={selectedNode.code}
+                    onChange={handleCodeChange}
+                    theme={theme === 'dark' ? 'vs-dark' : 'light'}
+                    options={{
+                      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                      fontSize: 13,
+                      lineNumbers: 'on',
+                      minimap: { enabled: false },
+                      scrollBeyondLastLine: false,
+                      wordWrap: 'on',
+                      padding: { top: 12 }
+                    }}
+                  />
+                </div>
+              );
+            })()}
             {selectedNode.type !== 'compute' && (
               <div className="empty-state">
                 <HardDrive size={48} strokeWidth={1} />
