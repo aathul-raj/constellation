@@ -22,16 +22,13 @@ export default function Header() {
         </div>
       </div>
 
-      <div className="header-center">
+      <div className="header-right">
         {isRunning && (
           <div className="running-indicator">
             <Activity size={16} className="pulse" />
             <span>Pipeline Running</span>
           </div>
         )}
-      </div>
-
-      <div className="header-right">
         <div className="stats">
           <div className="stat">
             <span className="stat-value">{completedCount}/{graph.nodes.length}</span>
