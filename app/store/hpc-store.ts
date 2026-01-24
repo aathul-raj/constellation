@@ -95,7 +95,11 @@ const initialGraph: HPCGraph = {
       name: "Process Data",
       type: "compute",
       status: "queued",
-      code: `def task(inp_file, output_file):
+      code: `def task(in_df, out_df):
+    import numpy as np
+    import pandas as pd
+
+    # Your code here
     pass`,
       in: ["550e8400-e29b-41d4-a716-446655440000"],
       out: ["550e8400-e29b-41d4-a716-446655440002"]

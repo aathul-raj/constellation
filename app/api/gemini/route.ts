@@ -64,17 +64,20 @@ meta.schema ? `Schema: ${JSON.stringify(meta.schema, null, 2)}` :
 `).join('\n')}
 
 IMPORTANT: Generate code that works with the ACTUAL columns and data shown above.
-The 'input' parameter will contain this data structure.
+The 'in_df' parameter will contain this data structure.
 ` : ''}
 
 YOUR TASK:
 Generate code that can be efficiently parallelized across multiple cores/nodes. The system will automatically distribute the workload.
 
 FUNCTION SIGNATURE:
-def task(input, output):
+def task(in_df, out_df):
+    import numpy as np
+    import pandas as pd
+
     """
-    input: Data from upstream nodes (dict, list, or dataframe)
-    output: Where to write results for downstream nodes
+    in_df: Data from upstream nodes (dict, list, or dataframe)
+    out_df: Where to write results for downstream nodes
     """
     # Your parallelizable code here
 
@@ -86,26 +89,30 @@ PARALLELIZATION PRINCIPLES:
 5. **Independent operations**: Each chunk should be processable without data from other chunks
 
 EXAMPLE - Good (parallelizable, CSV input):
-def task(input, output):
+def task(in_df, out_df):
+    import numpy as np
     import pandas as pd
     # Assuming input CSV has been loaded as DataFrame
-    df = input  # or input['data'] depending on structure
+    df = in_df  # or in_df['data'] depending on structure
     # Vectorized operations parallelize automatically
     df['doubled'] = df['value_column'] * 2
-    output['result'] = df
+    out_df['result'] = df
 
 EXAMPLE - Bad (not parallelizable):
-def task(input, output):
+def task(in_df, out_df):
+    import numpy as np
+    import pandas as pd
     # Global accumulator breaks parallelism
     total = 0
-    for item in input['data']:
+    for item in in_df['data']:
         total += item  # Sequential dependency
-    output['result'] = total
+    out_df['result'] = total
 
 HOW TO ACCESS INPUT DATA:
-- For CSV: input will be a pandas DataFrame with the columns shown above
-- For JSON: input will be a dict/list matching the schema shown above
+- For CSV: in_df will be a pandas DataFrame with the columns shown above
+- For JSON: in_df will be a dict/list matching the schema shown above
 - Use the EXACT column names from the input data context
+- Always import numpy and pandas at the start: import numpy as np; import pandas as pd
 
 RESPONSE FORMAT (always respond with valid JSON):
 {
