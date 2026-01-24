@@ -65,7 +65,9 @@ body {
 
 .dashboard-main {
   flex: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: 0.9fr 1.2fr 1.1fr;
+  gap: 1px;
   background: var(--border-color);
   overflow: hidden;
 }
@@ -966,6 +968,20 @@ body {
 .typing-indicator {
   animation: spin 1s linear infinite;
   color: var(--accent-primary);
+}
+
+.cursor-blink {
+  animation: blink 1s step-end infinite;
+  color: var(--accent-primary);
+}
+
+@keyframes blink {
+  0%, 50% {
+    opacity: 1;
+  }
+  51%, 100% {
+    opacity: 0;
+  }
 }
 
 .chat-input-form {
