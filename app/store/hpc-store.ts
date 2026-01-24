@@ -26,6 +26,14 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
+export interface Notification {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  title: string;
+  message?: string;
+  timestamp: Date;
+}
+
 interface HPCStore {
   graph: HPCGraph;
   selectedNodeId: string | null;
@@ -33,6 +41,7 @@ interface HPCStore {
   runProgress: number;
   theme: 'dark' | 'light';
   chatMessages: ChatMessage[];
+  notifications: Notification[];
 
   // Actions
   setGraph: (graph: HPCGraph) => void;
@@ -46,6 +55,8 @@ interface HPCStore {
   setRunProgress: (progress: number) => void;
   toggleTheme: () => void;
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
+  addNotification: (notification: Omit<Notification, 'id' | 'timestamp'>) => void;
+  removeNotification: (id: string) => void;
 }
 
 const initialGraph: HPCGraph = {
@@ -66,7 +77,7 @@ const initialGraph: HPCGraph = {
       name: "Process Data",
       type: "compute",
       status: "queued",
-      code: `def task(input, output):
+      code: `def task(input_file, output_file):
     pass`,
       in: ["550e8400-e29b-41d4-a716-446655440000"],
       out: ["550e8400-e29b-41d4-a716-446655440002"]
@@ -93,10 +104,11 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
     {
       id: '1',
       role: 'assistant',
-      content: 'HPC Orchestrator ready. Select a node to view its job script, or click "Run Batch" to simulate the pipeline execution.',
+      content: 'HPC Orchestrator ready. Select a node to view its job script, or click "Run" to execute the pipeline.',
       timestamp: new Date()
     }
   ],
+  notifications: [],
 
   setGraph: (graph) => set({ graph }),
 
@@ -162,5 +174,20 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
         timestamp: new Date()
       }
     ]
+  })),
+
+  addNotification: (notification) => set((state) => ({
+    notifications: [
+      ...state.notifications,
+      {
+        ...notification,
+        id: crypto.randomUUID(),
+        timestamp: new Date()
+      }
+    ]
+  })),
+
+  removeNotification: (id) => set((state) => ({
+    notifications: state.notifications.filter(n => n.id !== id)
   }))
 }));

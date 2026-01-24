@@ -6,6 +6,20 @@ import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download } from 'luc
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
 
+interface DeploymentResult {
+  deploymentId: string;
+  status: 'completed' | 'failed';
+  nodes: Array<{
+    id: string;
+    name: string;
+    type: string;
+    status: 'completed' | 'failed';
+    outputFileId?: string;
+    error?: string;
+  }>;
+  timestamp: string;
+}
+
 export default function EditorPanel() {
   const {
     graph,
@@ -20,7 +34,7 @@ export default function EditorPanel() {
     runProgress,
     setRunProgress,
     theme,
-    addChatMessage
+    addNotification
   } = useHPCStore();
 
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
@@ -43,60 +57,84 @@ export default function EditorPanel() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const runBatch = useCallback(async () => {
+  const handleRun = useCallback(async () => {
     if (isRunning) return;
 
     setIsRunning(true);
     setRunProgress(0);
     resetAllStatuses();
 
-    addChatMessage({
-      role: 'assistant',
-      content: `Starting batch execution for "${graph.name}"...`
-    });
-
-    const levels = getExecutionLevels(graph);
-    const totalNodes = graph.nodes.length;
-    let completedNodes = 0;
-
-    for (const level of levels) {
-      // Set all nodes in this level to running (parallel execution within level)
-      for (const nodeId of level) {
-        updateNodeStatus(nodeId, 'running');
-      }
-
-      addChatMessage({
-        role: 'assistant',
-        content: `Running: ${level.map(id => graph.nodes.find(n => n.id === id)?.id).join(', ')}`
+    try {
+      // Deploy to backend
+      const response = await fetch('/api/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graph })
       });
 
-      // Simulate execution time (1-2 seconds per level)
-      await sleep(1000 + Math.random() * 1000);
+      const deployResult: DeploymentResult = await response.json();
 
-      // Complete all nodes in this level
-      for (const nodeId of level) {
-        updateNodeStatus(nodeId, 'completed');
-        completedNodes++;
-        setRunProgress((completedNodes / totalNodes) * 100);
+      if (!response.ok) {
+        addNotification({
+          type: 'error',
+          title: 'Deployment Failed',
+          message: 'Failed to deploy pipeline'
+        });
+        setIsRunning(false);
+        return;
       }
+
+      // Update node statuses based on deployment result
+      const levels = getExecutionLevels(graph);
+      const totalNodes = graph.nodes.length;
+      let completedNodes = 0;
+
+      for (const level of levels) {
+        // Set all nodes in this level to running
+        for (const nodeId of level) {
+          updateNodeStatus(nodeId, 'running');
+        }
+
+        // Simulate execution time (500ms per level)
+        await sleep(500);
+
+        // Complete all nodes in this level
+        for (const nodeId of level) {
+          const nodeResult = deployResult.nodes.find(n => n.id === nodeId);
+          if (nodeResult?.outputFileId) {
+            updateNodeFile(nodeId, nodeResult.outputFileId);
+          }
+          updateNodeStatus(nodeId, 'completed');
+          completedNodes++;
+          setRunProgress((completedNodes / totalNodes) * 100);
+        }
+      }
+
+      addNotification({
+        type: 'success',
+        title: 'Pipeline Executed',
+        message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
+      });
+    } catch (error) {
+      addNotification({
+        type: 'error',
+        title: 'Execution Error',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setIsRunning(false);
     }
-
-    addChatMessage({
-      role: 'assistant',
-      content: `Batch execution completed. All ${totalNodes} jobs finished successfully.`
-    });
-
-    setIsRunning(false);
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addChatMessage]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, updateNodeFile, addNotification]);
 
   const handleReset = useCallback(() => {
     resetAllStatuses();
     setRunProgress(0);
-    addChatMessage({
-      role: 'assistant',
-      content: 'Pipeline reset. All nodes returned to queued state.'
+    addNotification({
+      type: 'info',
+      title: 'Pipeline Reset',
+      message: 'All nodes returned to queued state'
     });
-  }, [resetAllStatuses, setRunProgress, addChatMessage]);
+  }, [resetAllStatuses, setRunProgress, addNotification]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!selectedNodeId || !e.target.files?.[0]) return;
@@ -117,26 +155,29 @@ export default function EditorPanel() {
 
       if (response.ok) {
         updateNodeFile(selectedNodeId, data.key);
-        addChatMessage({
-          role: 'assistant',
-          content: `File "${file.name}" uploaded for input node`
+        addNotification({
+          type: 'success',
+          title: 'File Uploaded',
+          message: file.name
         });
       } else {
-        addChatMessage({
-          role: 'assistant',
-          content: `Failed to upload file: ${data.error}`
+        addNotification({
+          type: 'error',
+          title: 'Upload Failed',
+          message: data.error
         });
       }
     } catch (error) {
-      addChatMessage({
-        role: 'assistant',
-        content: 'Failed to upload file'
+      addNotification({
+        type: 'error',
+        title: 'Upload Error',
+        message: error instanceof Error ? error.message : 'Failed to upload file'
       });
     } finally {
       setUploadingNodeId(null);
       e.target.value = '';
     }
-  }, [selectedNodeId, updateNodeFile, addChatMessage]);
+  }, [selectedNodeId, updateNodeFile, addNotification]);
 
   const handleFileDownload = useCallback(() => {
     if (!selectedNode?.fileId) return;
@@ -309,11 +350,11 @@ export default function EditorPanel() {
           </button>
           <button
             className={`btn btn-primary ${isRunning ? 'running' : ''}`}
-            onClick={runBatch}
+            onClick={handleRun}
             disabled={isRunning}
           >
             <Play size={16} />
-            {isRunning ? 'Running...' : 'Run Batch'}
+            {isRunning ? 'Running...' : 'Run'}
           </button>
         </div>
       </div>
