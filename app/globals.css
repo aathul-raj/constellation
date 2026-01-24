@@ -686,6 +686,18 @@ body {
   background: var(--success);
 }
 
+.selected-node-indicator {
+  padding: 0.5rem 1rem;
+  background: rgba(59, 130, 246, 0.1);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.selected-node-indicator strong {
+  color: var(--accent-primary);
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
