@@ -65,11 +65,38 @@ body {
 
 .dashboard-main {
   flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1.2fr 0.8fr;
-  gap: 1px;
+  display: flex;
   background: var(--border-color);
   overflow: hidden;
+}
+
+.dashboard-main > div {
+  background: var(--bg-secondary);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.resize-handle {
+  width: 4px;
+  background: var(--border-color);
+  cursor: col-resize;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.resize-handle:hover {
+  background: var(--accent-primary);
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 0;
+  bottom: 0;
 }
 
 /* Header */
@@ -210,12 +237,62 @@ body {
   color: var(--text-secondary);
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.control-btn.active {
+  background: rgba(0, 194, 255, 0.15);
+  color: #00C2FF;
+  border-color: #00C2FF;
+  box-shadow: 0 0 12px rgba(0, 194, 255, 0.2);
+}
+
+.control-divider {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 0 0.25rem;
+}
+
 /* Graph Panel */
 .graph-panel {
   display: flex;
   flex-direction: column;
   background: var(--bg-secondary);
   overflow: hidden;
+  height: 100%;
 }
 
 .node-count {
@@ -230,6 +307,17 @@ body {
   flex: 1;
   position: relative;
   min-height: 0;
+  height: 100%;
+}
+
+.graph-container > div:first-child {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.graph-container canvas {
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .graph-container.loading {
@@ -300,6 +388,7 @@ body {
   flex-direction: column;
   background: var(--bg-secondary);
   overflow: hidden;
+  height: 100%;
 }
 
 .node-badge {
@@ -752,6 +841,7 @@ body {
   flex-direction: column;
   background: var(--bg-secondary);
   overflow: hidden;
+  height: 100%;
 }
 
 .status-indicator {

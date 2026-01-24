@@ -3,34 +3,33 @@ import { getFile, deleteFile, getFileMetadata } from '@/app/lib/s3';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { fileId: string } }
+  { params }: { params: Promise<{ fileId: string }> } 
 ) {
   try {
-    const fileId = decodeURIComponent(params.fileId);
+    const { fileId: rawFileId } = await params; 
+    const fileId = decodeURIComponent(rawFileId);
+    
     const download = request.nextUrl.searchParams.get('download') === 'true';
 
-    // Get file from S3
     const fileBuffer = await getFile(fileId);
 
-    // If download query param is true, force download
     if (download) {
       const headers = new Headers();
       headers.set('Content-Type', 'application/octet-stream');
       headers.set('Content-Disposition', `attachment; filename="${fileId}"`);
       headers.set('Content-Length', fileBuffer.length.toString());
 
-      return new NextResponse(fileBuffer, {
+      return new NextResponse(new Uint8Array(fileBuffer), {
         status: 200,
         headers,
       });
     }
 
-    // Otherwise return as JSON (for text files) or as blob
     const headers = new Headers();
     headers.set('Content-Type', 'application/octet-stream');
     headers.set('Content-Length', fileBuffer.length.toString());
 
-    return new NextResponse(fileBuffer, {
+    return new NextResponse(new Uint8Array(fileBuffer), {
       status: 200,
       headers,
     });
@@ -45,12 +44,12 @@ export async function GET(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { fileId: string } }
+  { params }: { params: Promise<{ fileId: string }> }
 ) {
   try {
-    const fileId = decodeURIComponent(params.fileId);
+    const { fileId: rawFileId } = await params;
+    const fileId = decodeURIComponent(rawFileId);
 
-    // Delete file from S3
     await deleteFile(fileId);
 
     return NextResponse.json(
@@ -66,15 +65,13 @@ export async function DELETE(
   }
 }
 
-/**
- * Optional: Get file metadata without downloading
- */
 export async function HEAD(
   request: NextRequest,
-  { params }: { params: { fileId: string } }
+  { params }: { params: Promise<{ fileId: string }> }
 ) {
   try {
-    const fileId = decodeURIComponent(params.fileId);
+    const { fileId: rawFileId } = await params;
+    const fileId = decodeURIComponent(rawFileId);
 
     const metadata = await getFileMetadata(fileId);
 

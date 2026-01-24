@@ -1,0 +1,130 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--void-deep);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.controlBtn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.controlBtn:hover {
+  background: var(--glass-bg-hover);
+  color: var(--text-primary);
+  border-color: var(--glass-border-light);
+}
+
+.controlBtn.active {
+  background: var(--neon-blue-dim);
+  color: var(--neon-blue);
+  border-color: var(--neon-blue);
+}
+
+.graphContainer {
+  flex: 1;
+  min-height: 300px;
+  position: relative;
+  background: var(--void-deep);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+/* Override Reagraph default styles */
+.graphContainer :global(.graph-canvas) {
+  background: var(--void-deep) !important;
+}
+
+.graphContainer :global(.graph-canvas canvas) {
+  background: transparent !important;
+}
+
+.nodeList {
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--void-base);
+}
+
+.nodeItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s ease;
+  text-align: left;
+}
+
+.nodeItem:hover {
+  background: var(--glass-bg-hover);
+}
+
+.nodeItem.selected {
+  background: var(--glass-bg-hover);
+  border: 1px solid var(--glass-border-light);
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.nodeInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nodeLabel {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nodeItem.selected .nodeLabel {
+  color: var(--text-primary);
+}
+
+.nodeType {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+
+.metric {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
