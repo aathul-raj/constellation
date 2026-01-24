@@ -363,55 +363,26 @@ export default function EditorPanel() {
                 )}
               </>
             )}
-            {selectedNode.type === 'compute' && (() => {
-              // Check if node has input files with metadata
-              const inputNodes = graph.nodes.filter(n => selectedNode.in.includes(n.id));
-              const hasInputMetadata = inputNodes.some(n => n.fileMetadata);
-
-              if (!hasInputMetadata && inputNodes.length > 0) {
-                // Has input nodes but no file metadata
-                return (
-                  <div className="empty-state">
-                    <HardDrive size={48} strokeWidth={1} />
-                    <h3>No Input Data</h3>
-                    <p>Upload a file to the input node first.</p>
-                    <p className="empty-hint">The AI needs to know your data structure to generate code.</p>
-                  </div>
-                );
-              } else if (inputNodes.length === 0) {
-                // No input nodes connected
-                return (
-                  <div className="empty-state">
-                    <Terminal size={48} strokeWidth={1} />
-                    <h3>No Input Connected</h3>
-                    <p>This compute node has no input data source.</p>
-                    <p className="empty-hint">Connect an input-file node to this node in the graph.</p>
-                  </div>
-                );
-              }
-
-              // Has input metadata, show editor
-              return (
-                <div className="monaco-wrapper">
-                  <Editor
-                    height="100%"
-                    language="python"
-                    value={selectedNode.code}
-                    onChange={handleCodeChange}
-                    theme={theme === 'dark' ? 'vs-dark' : 'light'}
-                    options={{
-                      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                      fontSize: 13,
-                      lineNumbers: 'on',
-                      minimap: { enabled: false },
-                      scrollBeyondLastLine: false,
-                      wordWrap: 'on',
-                      padding: { top: 12 }
-                    }}
-                  />
-                </div>
-              );
-            })()}
+            {selectedNode.type === 'compute' && (
+              <div className="monaco-wrapper">
+                <Editor
+                  height="100%"
+                  language="python"
+                  value={selectedNode.code}
+                  onChange={handleCodeChange}
+                  theme={theme === 'dark' ? 'vs-dark' : 'light'}
+                  options={{
+                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'on',
+                    padding: { top: 12 }
+                  }}
+                />
+              </div>
+            )}
             {selectedNode.type !== 'compute' && (
               <div className="empty-state">
                 <HardDrive size={48} strokeWidth={1} />

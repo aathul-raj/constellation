@@ -44,29 +44,6 @@ export default function AIChatPanel() {
   const generateResponse = useCallback(async (userMessage: string) => {
     setIsTyping(true);
 
-    // Check if selected node is a compute node without input metadata
-    const node = selectedNodeId ? graph.nodes.find(n => n.id === selectedNodeId) : null;
-    if (node?.type === 'compute') {
-      const inputNodes = graph.nodes.filter(n => node.in.includes(n.id));
-      const hasInputMetadata = inputNodes.some(n => n.fileMetadata);
-
-      if (!hasInputMetadata && inputNodes.length > 0) {
-        setIsTyping(false);
-        addChatMessage({
-          role: 'assistant',
-          content: 'Please upload a file to the input node first. I need to know your data structure to generate code.'
-        });
-        return;
-      } else if (inputNodes.length === 0) {
-        setIsTyping(false);
-        addChatMessage({
-          role: 'assistant',
-          content: 'This compute node has no input connected. Connect an input-file node to it first.'
-        });
-        return;
-      }
-    }
-
     try {
       const res = await fetch('/api/gemini', {
         method: 'POST',
@@ -172,14 +149,6 @@ export default function AIChatPanel() {
     ? graph.nodes.find(n => n.id === selectedNodeId)
     : null;
 
-  // Check if selected compute node has input metadata
-  const canGenerateCode = selectedNode?.type === 'compute'
-    ? (() => {
-        const inputNodes = graph.nodes.filter(n => selectedNode.in.includes(n.id));
-        return inputNodes.some(n => n.fileMetadata);
-      })()
-    : true;
-
   return (
     <div className="chat-panel">
       <div className="panel-header">
@@ -190,9 +159,6 @@ export default function AIChatPanel() {
       {selectedNode && (
         <div className="selected-node-indicator">
           Selected: <strong>{selectedNode.name}</strong> ({selectedNode.type})
-          {selectedNode.type === 'compute' && !canGenerateCode && (
-            <span className="warning-badge">⚠ No input data</span>
-          )}
         </div>
       )}
 
@@ -237,9 +203,7 @@ export default function AIChatPanel() {
           onChange={(e) => setInput(e.target.value)}
           placeholder={
             selectedNode?.type === 'compute'
-              ? canGenerateCode
-                ? "Describe the task (e.g., 'sort by date', 'filter rows where x > 10')"
-                : "Upload input file first to generate code"
+              ? "Describe the task (e.g., 'sort by date', 'filter rows where x > 10')"
               : "Select a compute node to write code, or ask a question..."
           }
           disabled={isTyping}
