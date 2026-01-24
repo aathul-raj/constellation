@@ -33,6 +33,7 @@ export default function EditorPanel() {
     updateNodeFile,
     updateNodeCsvData,
     clearNodeCsvData,
+    markCsvAsUploaded,
     resetAllStatuses,
     isRunning,
     setIsRunning,
@@ -281,11 +282,9 @@ export default function EditorPanel() {
         const metadata = await analyzeResponse.json();
 
         updateNodeFile(selectedNodeId, uploadData.key, metadata);
-        clearNodeCsvData(selectedNodeId);
 
-        // Clear localStorage after successful upload
-        const storageKey = `csv-edit-${selectedNodeId}`;
-        localStorage.removeItem(storageKey);
+        // Mark CSV as uploaded (don't clear csvData, just mark it)
+        markCsvAsUploaded(selectedNodeId);
 
         addNotification({
           type: 'success',
@@ -308,7 +307,7 @@ export default function EditorPanel() {
     } finally {
       setUploadingNodeId(null);
     }
-  }, [selectedNodeId, selectedNode, updateNodeFile, clearNodeCsvData, addNotification]);
+  }, [selectedNodeId, selectedNode, updateNodeFile, markCsvAsUploaded, addNotification]);
 
   const handleFileDownload = useCallback(() => {
     if (!selectedNode?.fileId) return;
@@ -513,6 +512,7 @@ export default function EditorPanel() {
                 data={selectedNode.csvData}
                 fileName={selectedNode.fileName || 'Untitled'}
                 nodeId={selectedNodeId!}
+                hasUnsavedChanges={selectedNode.csvData !== selectedNode.lastUploadedCsvData}
                 onDataChange={(data) => updateNodeCsvData(selectedNodeId!, data, selectedNode.fileName)}
                 onUpload={handleUploadToAWS}
                 onCancel={() => {
