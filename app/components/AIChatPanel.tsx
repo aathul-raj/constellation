@@ -4,8 +4,25 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 
+interface AIResponse {
+  action?: 'update_code' | 'update_name' | 'chat';
+  nodeId?: string;
+  code?: string;
+  name?: string;
+  message?: string;
+  error?: string;
+}
+
 export default function AIChatPanel() {
-  const { chatMessages, addChatMessage, graph, selectedNodeId } = useHPCStore();
+  const {
+    chatMessages,
+    addChatMessage,
+    graph,
+    selectedNodeId,
+    updateNodeCode,
+    updateNodeName,
+    selectNode
+  } = useHPCStore();
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -32,18 +49,58 @@ export default function AIChatPanel() {
         }),
       });
 
-      const data = await res.json();
+      const data: AIResponse = await res.json();
 
       if (data.error) {
         addChatMessage({
           role: 'assistant',
           content: `Error: ${data.error}`
         });
-      } else {
-        addChatMessage({
-          role: 'assistant',
-          content: data.response
-        });
+        return;
+      }
+
+      // Handle different actions
+      switch (data.action) {
+        case 'update_code': {
+          const targetNodeId = data.nodeId || selectedNodeId;
+          if (targetNodeId && data.code) {
+            updateNodeCode(targetNodeId, data.code);
+            // Select the node so user can see the change
+            if (targetNodeId !== selectedNodeId) {
+              selectNode(targetNodeId);
+            }
+            addChatMessage({
+              role: 'assistant',
+              content: data.message || `Updated code for node. Here's what I wrote:\n\n\`\`\`python\n${data.code}\n\`\`\``
+            });
+          } else {
+            addChatMessage({
+              role: 'assistant',
+              content: data.message || 'Please select a compute node first.'
+            });
+          }
+          break;
+        }
+
+        case 'update_name': {
+          const targetNodeId = data.nodeId || selectedNodeId;
+          if (targetNodeId && data.name) {
+            updateNodeName(targetNodeId, data.name);
+            addChatMessage({
+              role: 'assistant',
+              content: data.message || `Renamed node to "${data.name}".`
+            });
+          }
+          break;
+        }
+
+        case 'chat':
+        default:
+          addChatMessage({
+            role: 'assistant',
+            content: data.message || 'I understood your request but have no specific action to take.'
+          });
+          break;
       }
     } catch (error) {
       addChatMessage({
@@ -53,7 +110,7 @@ export default function AIChatPanel() {
     } finally {
       setIsTyping(false);
     }
-  }, [graph, selectedNodeId, addChatMessage]);
+  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, selectNode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,12 +127,22 @@ export default function AIChatPanel() {
     await generateResponse(userMessage);
   };
 
+  const selectedNode = selectedNodeId
+    ? graph.nodes.find(n => n.id === selectedNodeId)
+    : null;
+
   return (
     <div className="chat-panel">
       <div className="panel-header">
         <h2>AI Assistant</h2>
         <span className="status-indicator online">Online</span>
       </div>
+
+      {selectedNode && (
+        <div className="selected-node-indicator">
+          Selected: <strong>{selectedNode.name}</strong> ({selectedNode.type})
+        </div>
+      )}
 
       <div className="chat-messages">
         {chatMessages.map((message) => (
@@ -116,7 +183,10 @@ export default function AIChatPanel() {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about the pipeline..."
+          placeholder={selectedNode?.type === 'compute'
+            ? "Describe the task (e.g., 'sort by date', 'filter rows where x > 10')"
+            : "Select a compute node to write code, or ask a question..."
+          }
           disabled={isTyping}
         />
         <button type="submit" disabled={!input.trim() || isTyping}>
