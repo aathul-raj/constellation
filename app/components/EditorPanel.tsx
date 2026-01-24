@@ -2,7 +2,7 @@
 
 import { useMemo, useCallback, useState } from 'react';
 import Editor from '@monaco-editor/react';
-import { Play, RotateCcw, Terminal, Cpu, HardDrive, Zap } from 'lucide-react';
+import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
 
@@ -10,8 +10,10 @@ export default function EditorPanel() {
   const {
     graph,
     selectedNodeId,
+    updateNodeName,
     updateNodeCode,
     updateNodeStatus,
+    updateNodeFile,
     resetAllStatuses,
     isRunning,
     setIsRunning,
@@ -21,10 +23,17 @@ export default function EditorPanel() {
     addChatMessage
   } = useHPCStore();
 
-  const selectedNode = useMemo(() =>
-    graph.nodes.find(n => n.id === selectedNodeId),
-    [graph.nodes, selectedNodeId]
-  );
+  const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+
+  const selectedNode = useMemo(() => {
+    const node = graph.nodes.find(n => n.id === selectedNodeId);
+    if (node && !editingName) {
+      setNameInput(node.name);
+    }
+    return node;
+  }, [graph.nodes, selectedNodeId, editingName]);
 
   const handleCodeChange = useCallback((value: string | undefined) => {
     if (selectedNodeId && value !== undefined) {
@@ -58,7 +67,7 @@ export default function EditorPanel() {
 
       addChatMessage({
         role: 'assistant',
-        content: `Running: ${level.map(id => graph.nodes.find(n => n.id === id)?.label).join(', ')}`
+        content: `Running: ${level.map(id => graph.nodes.find(n => n.id === id)?.id).join(', ')}`
       });
 
       // Simulate execution time (1-2 seconds per level)
@@ -89,14 +98,81 @@ export default function EditorPanel() {
     });
   }, [resetAllStatuses, setRunProgress, addChatMessage]);
 
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedNodeId || !e.target.files?.[0]) return;
+
+    const file = e.target.files[0];
+    const formData = new FormData();
+    formData.append('file', file);
+
+    setUploadingNodeId(selectedNodeId);
+
+    try {
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        updateNodeFile(selectedNodeId, data.key);
+        addChatMessage({
+          role: 'assistant',
+          content: `File "${file.name}" uploaded for input node`
+        });
+      } else {
+        addChatMessage({
+          role: 'assistant',
+          content: `Failed to upload file: ${data.error}`
+        });
+      }
+    } catch (error) {
+      addChatMessage({
+        role: 'assistant',
+        content: 'Failed to upload file'
+      });
+    } finally {
+      setUploadingNodeId(null);
+      e.target.value = '';
+    }
+  }, [selectedNodeId, updateNodeFile, addChatMessage]);
+
+  const handleFileDownload = useCallback(() => {
+    if (!selectedNode?.fileId) return;
+
+    const url = `/api/files/${encodeURIComponent(selectedNode.fileId)}?download=true`;
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = selectedNode.fileId;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [selectedNode]);
+
+  const handleSaveName = useCallback(() => {
+    if (selectedNodeId && nameInput.trim()) {
+      updateNodeName(selectedNodeId, nameInput.trim());
+      setEditingName(false);
+    }
+  }, [selectedNodeId, nameInput, updateNodeName]);
+
+  const handleNameKeyPress = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveName();
+    } else if (e.key === 'Escape') {
+      setEditingName(false);
+    }
+  }, [handleSaveName]);
+
   const getTypeIcon = (type: string) => {
     switch (type) {
+      case 'input-file':
+        return <HardDrive size={14} />;
       case 'compute':
         return <Cpu size={14} />;
-      case 'io':
+      case 'output-file':
         return <HardDrive size={14} />;
-      case 'aggregate':
-        return <Zap size={14} />;
       default:
         return <Terminal size={14} />;
     }
@@ -119,49 +195,92 @@ export default function EditorPanel() {
           <>
             <div className="editor-header">
               <div className="node-info">
-                <h3>{selectedNode.label}</h3>
+                {editingName ? (
+                  <input
+                    type="text"
+                    className="name-input"
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    onKeyDown={handleNameKeyPress}
+                    onBlur={handleSaveName}
+                    autoFocus
+                  />
+                ) : (
+                  <h3 onClick={() => setEditingName(true)} className="editable-name">
+                    {selectedNode.name}
+                  </h3>
+                )}
                 <span className={`status-badge ${selectedNode.status}`}>
                   {selectedNode.status}
                 </span>
               </div>
-              {selectedNode.resources && (
-                <div className="resources">
-                  {selectedNode.resources.cores && (
-                    <span className="resource-item">
-                      <Cpu size={12} /> {selectedNode.resources.cores} cores
-                    </span>
+              {selectedNode.type === 'input-file' && (
+                <div className="file-actions">
+                  <label className="file-upload-btn">
+                    <Upload size={14} />
+                    <span>Upload File</span>
+                    <input
+                      type="file"
+                      onChange={handleFileUpload}
+                      disabled={uploadingNodeId === selectedNodeId}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                  {selectedNode.fileId && (
+                    <span className="file-indicator">{selectedNode.fileId}</span>
                   )}
-                  {selectedNode.resources.memory && (
-                    <span className="resource-item">
-                      <HardDrive size={12} /> {selectedNode.resources.memory}
-                    </span>
-                  )}
-                  {selectedNode.resources.gpu && (
-                    <span className="resource-item">
-                      <Zap size={12} /> {selectedNode.resources.gpu} GPU
-                    </span>
+                </div>
+              )}
+              {selectedNode.type === 'output-file' && (
+                <div className="file-actions">
+                  {selectedNode.fileId ? (
+                    <>
+                      <button
+                        className="file-download-btn"
+                        onClick={handleFileDownload}
+                      >
+                        <Download size={14} />
+                        <span>Download</span>
+                      </button>
+                      <span className="file-indicator">{selectedNode.fileId}</span>
+                    </>
+                  ) : (
+                    <span className="file-placeholder">No output file yet</span>
                   )}
                 </div>
               )}
             </div>
-            <div className="monaco-wrapper">
-              <Editor
-                height="100%"
-                defaultLanguage="shell"
-                value={selectedNode.code}
-                onChange={handleCodeChange}
-                theme={theme === 'dark' ? 'vs-dark' : 'light'}
-                options={{
-                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                  fontSize: 13,
-                  lineNumbers: 'on',
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  wordWrap: 'on',
-                  padding: { top: 12 }
-                }}
-              />
-            </div>
+            {selectedNode.type === 'compute' && (
+              <div className="monaco-wrapper">
+                <Editor
+                  height="100%"
+                  language="python"
+                  value={selectedNode.code}
+                  onChange={handleCodeChange}
+                  theme={theme === 'dark' ? 'vs-dark' : 'light'}
+                  options={{
+                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'on',
+                    padding: { top: 12 }
+                  }}
+                />
+              </div>
+            )}
+            {selectedNode.type !== 'compute' && (
+              <div className="empty-state">
+                <HardDrive size={48} strokeWidth={1} />
+                <h3>{selectedNode.type === 'input-file' ? 'Input File' : 'Output File'}</h3>
+                <p>
+                  {selectedNode.type === 'input-file'
+                    ? 'Upload a file to use as input for the compute task'
+                    : 'Output file will be available after the pipeline runs'}
+                </p>
+              </div>
+            )}
           </>
         ) : (
           <div className="empty-state">

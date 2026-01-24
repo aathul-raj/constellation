@@ -6,7 +6,6 @@ export interface ReagraphNode {
   data?: {
     type: string;
     status: NodeStatus;
-    resources?: HPCNode['resources'];
   };
 }
 
@@ -24,11 +23,10 @@ export interface ReagraphData {
 export function transformToReagraph(graph: HPCGraph): ReagraphData {
   const nodes: ReagraphNode[] = graph.nodes.map((node) => ({
     id: node.id,
-    label: node.label,
+    label: node.name,
     data: {
       type: node.type,
-      status: node.status,
-      resources: node.resources
+      status: node.status
     }
   }));
 
@@ -64,14 +62,12 @@ export function getStatusColor(status: NodeStatus): string {
 
 export function getNodeTypeIcon(type: HPCNode['type']): string {
   switch (type) {
+    case 'input-file':
+      return '📥';
     case 'compute':
       return '⚡';
-    case 'data':
-      return '💾';
-    case 'io':
-      return '📁';
-    case 'aggregate':
-      return '🔗';
+    case 'output-file':
+      return '📤';
     default:
       return '●';
   }

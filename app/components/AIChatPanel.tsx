@@ -37,21 +37,15 @@ export default function AIChatPanel() {
       if (selectedNodeId) {
         const node = graph.nodes.find(n => n.id === selectedNodeId);
         if (node) {
-          response = `Selected: ${node.label}\nType: ${node.type}\nStatus: ${node.status}\nDependencies: ${node.in.length > 0 ? node.in.join(', ') : 'None'}\nOutputs to: ${node.out.length > 0 ? node.out.join(', ') : 'None'}`;
+          response = `Selected: ${node.name}\nType: ${node.type}\nStatus: ${node.status}\nDependencies: ${node.in.length > 0 ? node.in.join(', ') : 'None'}\nOutputs to: ${node.out.length > 0 ? node.out.join(', ') : 'None'}`;
         }
       } else {
         response = 'No node currently selected. Click a node in the graph to inspect it.';
       }
     } else if (lowerMessage.includes('help')) {
-      response = `Available commands:\n- Ask about "status" to see pipeline progress\n- Ask about "selected node" for node details\n- Ask about "resources" for cluster info\n- Click "Run Batch" to execute the pipeline`;
-    } else if (lowerMessage.includes('resource') || lowerMessage.includes('cluster')) {
-      const totalCores = graph.nodes.reduce((sum, n) => sum + (n.resources?.cores || 0), 0);
-      const totalGPU = graph.nodes.reduce((sum, n) => sum + (n.resources?.gpu || 0), 0);
-      response = `Cluster Resources Required:\n- Total CPU Cores: ${totalCores}\n- Total GPUs: ${totalGPU}\n- Nodes: ${graph.nodes.length}`;
-    } else if (lowerMessage.includes('optimize') || lowerMessage.includes('suggest')) {
-      response = `Optimization suggestions:\n1. Preprocess nodes can run in parallel\n2. Consider increasing GPU allocation for training\n3. Data ingestion could benefit from parallel I/O`;
+      response = `Available commands:\n- Ask about "status" to see pipeline progress\n- Ask about "selected node" for node details\n- Click "Run Batch" to execute the pipeline`;
     } else {
-      response = `I can help you monitor and understand your HPC pipeline. Try asking about:\n- Pipeline status\n- Selected node details\n- Cluster resources\n- Optimization suggestions`;
+      response = `I can help you monitor and understand your data processing pipeline. Try asking about:\n- Pipeline status\n- Selected node details`;
     }
 
     addChatMessage({
