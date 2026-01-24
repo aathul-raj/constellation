@@ -2,6 +2,17 @@ import { create } from 'zustand';
 
 export type NodeStatus = 'queued' | 'running' | 'completed' | 'failed';
 
+export interface FileMetadata {
+  fileName: string;
+  fileType: string;
+  columns?: string[];
+  columnTypes?: Record<string, string>;
+  rowCount?: number;
+  sampleRows?: Record<string, string>[];
+  preview?: string;
+  schema?: Record<string, string>;
+}
+
 export interface HPCNode {
   id: string;
   name: string;
@@ -11,6 +22,12 @@ export interface HPCNode {
   in: string[];
   out: string[];
   fileId?: string; // S3 file ID for input/output file nodes
+  fileMetadata?: FileMetadata; // Analysis of uploaded file
+  parallelization?: {
+    strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
+    estimatedCores?: number; // Suggested number of cores to use
+    chunkSize?: number; // For data chunking strategies
+  };
 }
 
 export interface HPCGraph {
@@ -26,6 +43,14 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
+export interface Notification {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  title: string;
+  message?: string;
+  timestamp: Date;
+}
+
 interface HPCStore {
   graph: HPCGraph;
   selectedNodeId: string | null;
@@ -33,6 +58,7 @@ interface HPCStore {
   runProgress: number;
   theme: 'dark' | 'light';
   chatMessages: ChatMessage[];
+  notifications: Notification[];
 
   // Actions
   setGraph: (graph: HPCGraph) => void;
@@ -40,12 +66,15 @@ interface HPCStore {
   updateNodeName: (nodeId: string, name: string) => void;
   updateNodeCode: (nodeId: string, code: string) => void;
   updateNodeStatus: (nodeId: string, status: NodeStatus) => void;
-  updateNodeFile: (nodeId: string, fileId: string) => void;
+  updateNodeFile: (nodeId: string, fileId: string, metadata?: FileMetadata) => void;
+  updateNodeParallelization: (nodeId: string, parallelization: HPCNode['parallelization']) => void;
   resetAllStatuses: () => void;
   setIsRunning: (running: boolean) => void;
   setRunProgress: (progress: number) => void;
   toggleTheme: () => void;
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
+  addNotification: (notification: Omit<Notification, 'id' | 'timestamp'>) => void;
+  removeNotification: (id: string) => void;
 }
 
 const initialGraph: HPCGraph = {
@@ -66,7 +95,7 @@ const initialGraph: HPCGraph = {
       name: "Process Data",
       type: "compute",
       status: "queued",
-      code: `def task(input, output):
+      code: `def task(inp_file, output_file):
     pass`,
       in: ["550e8400-e29b-41d4-a716-446655440000"],
       out: ["550e8400-e29b-41d4-a716-446655440002"]
@@ -93,10 +122,11 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
     {
       id: '1',
       role: 'assistant',
-      content: 'HPC Orchestrator ready. Select a node to view its job script, or click "Run Batch" to simulate the pipeline execution.',
+      content: 'HPC Orchestrator ready. Select a node to view its job script, or click "Run" to execute the pipeline.',
       timestamp: new Date()
     }
   ],
+  notifications: [],
 
   setGraph: (graph) => set({ graph }),
 
@@ -129,11 +159,20 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
     }
   })),
 
-  updateNodeFile: (nodeId, fileId) => set((state) => ({
+  updateNodeFile: (nodeId, fileId, metadata) => set((state) => ({
     graph: {
       ...state.graph,
       nodes: state.graph.nodes.map((node) =>
-        node.id === nodeId ? { ...node, fileId } : node
+        node.id === nodeId ? { ...node, fileId, fileMetadata: metadata } : node
+      )
+    }
+  })),
+
+  updateNodeParallelization: (nodeId, parallelization) => set((state) => ({
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === nodeId ? { ...node, parallelization } : node
       )
     }
   })),
@@ -162,5 +201,20 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
         timestamp: new Date()
       }
     ]
+  })),
+
+  addNotification: (notification) => set((state) => ({
+    notifications: [
+      ...state.notifications,
+      {
+        ...notification,
+        id: crypto.randomUUID(),
+        timestamp: new Date()
+      }
+    ]
+  })),
+
+  removeNotification: (id) => set((state) => ({
+    notifications: state.notifications.filter(n => n.id !== id)
   }))
 }));

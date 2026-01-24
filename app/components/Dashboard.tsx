@@ -6,6 +6,7 @@ import { useHPCStore } from '../store/hpc-store';
 import Header from './Header';
 import EditorPanel from './EditorPanel';
 import AIChatPanel from './AIChatPanel';
+import NotificationCenter from './NotificationCenter';
 
 // Dynamic import for GraphPanel to avoid SSR issues with reagraph
 const GraphPanel = dynamic(() => import('./GraphPanel'), {
@@ -38,6 +39,7 @@ export default function Dashboard() {
         <EditorPanel />
         <AIChatPanel />
       </main>
+      <NotificationCenter />
     </div>
   );
 }
