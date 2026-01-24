@@ -1068,6 +1068,8 @@ body {
   flex: 1;
   min-height: 0;
   background: var(--bg-secondary);
+  position: relative;
+  z-index: 100;
 }
 
 .csv-header {
@@ -1077,6 +1079,8 @@ body {
   padding: 0.875rem 1rem;
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-color);
+  position: relative;
+  z-index: 10;
 }
 
 .csv-info {
@@ -1129,6 +1133,66 @@ body {
   background: var(--accent-primary);
   color: white;
   border-color: var(--accent-primary);
+}
+
+.csv-upload-btn.no-changes {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border-color: var(--border-color);
+  opacity: 0.6;
+}
+
+.csv-upload-btn.no-changes:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+  opacity: 1;
+}
+
+.csv-upload-btn-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.csv-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 9999;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.csv-tooltip::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  right: 12px;
+  border: 6px solid transparent;
+  border-top-color: var(--border-color);
+}
+
+.csv-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  right: 13px;
+  border: 5px solid transparent;
+  border-top-color: var(--bg-tertiary);
+  margin-top: -1px;
+}
+
+.csv-upload-btn-wrapper:hover .csv-tooltip {
+  opacity: 1;
 }
 
 .csv-cancel-btn {

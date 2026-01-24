@@ -25,6 +25,7 @@ export interface HPCNode {
   fileMetadata?: FileMetadata; // Analysis of uploaded file
   csvData?: string; // Local CSV data for editing before upload
   fileName?: string; // Original file name
+  lastUploadedCsvData?: string; // CSV data that was last uploaded to AWS
   parallelization?: {
     strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
     estimatedCores?: number; // Suggested number of cores to use
@@ -71,6 +72,7 @@ interface HPCStore {
   updateNodeFile: (nodeId: string, fileId: string, metadata?: FileMetadata) => void;
   updateNodeCsvData: (nodeId: string, csvData: string, fileName?: string) => void;
   clearNodeCsvData: (nodeId: string) => void;
+  markCsvAsUploaded: (nodeId: string) => void;
   updateNodeParallelization: (nodeId: string, parallelization: HPCNode['parallelization']) => void;
   resetAllStatuses: () => void;
   setIsRunning: (running: boolean) => void;
@@ -189,7 +191,16 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
     graph: {
       ...state.graph,
       nodes: state.graph.nodes.map((node) =>
-        node.id === nodeId ? { ...node, csvData: undefined, fileName: undefined } : node
+        node.id === nodeId ? { ...node, csvData: undefined, fileName: undefined, lastUploadedCsvData: undefined } : node
+      )
+    }
+  })),
+
+  markCsvAsUploaded: (nodeId) => set((state) => ({
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === nodeId ? { ...node, lastUploadedCsvData: node.csvData } : node
       )
     }
   })),
