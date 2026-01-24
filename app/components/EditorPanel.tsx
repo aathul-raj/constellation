@@ -5,6 +5,8 @@ import Editor from '@monaco-editor/react';
 import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
+import CSVEditor from './CSVEditor';
+import CSVViewer from './CSVViewer';
 
 interface DeploymentResult {
   deploymentId: string;
@@ -28,6 +30,8 @@ export default function EditorPanel() {
     updateNodeCode,
     updateNodeStatus,
     updateNodeFile,
+    updateNodeCsvData,
+    clearNodeCsvData,
     resetAllStatuses,
     isRunning,
     setIsRunning,
@@ -140,23 +144,91 @@ export default function EditorPanel() {
     if (!selectedNodeId || !e.target.files?.[0]) return;
 
     const file = e.target.files[0];
+
+    try {
+      // For CSV files, load them locally first
+      if (file.name.endsWith('.csv') || file.type === 'text/csv') {
+        const storageKey = `csv-edit-${selectedNodeId}`;
+
+        // Check if there's a saved version in localStorage
+        const savedData = localStorage.getItem(storageKey);
+        const fileContent = savedData || await file.text();
+
+        updateNodeCsvData(selectedNodeId, fileContent, file.name);
+
+        if (savedData) {
+          addNotification({
+            type: 'info',
+            title: 'Restored From Cache',
+            message: `${file.name} restored with your previous edits.`
+          });
+        } else {
+          addNotification({
+            type: 'info',
+            title: 'File Loaded',
+            message: `${file.name} loaded. Edit and review before uploading to AWS.`
+          });
+        }
+      } else {
+        // For non-CSV files, upload directly
+        setUploadingNodeId(selectedNodeId);
+
+        const analyzeFormData = new FormData();
+        analyzeFormData.append('file', file);
+
+        const analyzeResponse = await fetch('/api/analyze-file', {
+          method: 'POST',
+          body: analyzeFormData
+        });
+
+        const metadata = await analyzeResponse.json();
+
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', file);
+
+        const uploadResponse = await fetch('/api/upload', {
+          method: 'POST',
+          body: uploadFormData
+        });
+
+        const uploadData = await uploadResponse.json();
+
+        if (uploadResponse.ok) {
+          updateNodeFile(selectedNodeId, uploadData.key, metadata);
+          addNotification({
+            type: 'success',
+            title: 'File Uploaded',
+            message: `${file.name} uploaded successfully`
+          });
+        } else {
+          addNotification({
+            type: 'error',
+            title: 'Upload Failed',
+            message: uploadData.error
+          });
+        }
+      }
+    } catch (error) {
+      addNotification({
+        type: 'error',
+        title: 'File Error',
+        message: error instanceof Error ? error.message : 'Failed to process file'
+      });
+    } finally {
+      setUploadingNodeId(null);
+      e.target.value = '';
+    }
+  }, [selectedNodeId, updateNodeCsvData, updateNodeFile, addNotification]);
+
+  const handleUploadToAWS = useCallback(async () => {
+    if (!selectedNodeId || !selectedNode?.csvData || !selectedNode?.fileName) return;
+
     setUploadingNodeId(selectedNodeId);
 
     try {
-      // First, analyze the file
-      const analyzeFormData = new FormData();
-      analyzeFormData.append('file', file);
-
-      const analyzeResponse = await fetch('/api/analyze-file', {
-        method: 'POST',
-        body: analyzeFormData
-      });
-
-      const metadata = await analyzeResponse.json();
-
-      // Then upload it
+      const blob = new Blob([selectedNode.csvData], { type: 'text/csv' });
       const uploadFormData = new FormData();
-      uploadFormData.append('file', file);
+      uploadFormData.append('file', blob, selectedNode.fileName);
 
       const uploadResponse = await fetch('/api/upload', {
         method: 'POST',
@@ -166,20 +238,28 @@ export default function EditorPanel() {
       const uploadData = await uploadResponse.json();
 
       if (uploadResponse.ok) {
+        // Analyze the file
+        const analyzeFormData = new FormData();
+        analyzeFormData.append('file', blob, selectedNode.fileName);
+
+        const analyzeResponse = await fetch('/api/analyze-file', {
+          method: 'POST',
+          body: analyzeFormData
+        });
+
+        const metadata = await analyzeResponse.json();
+
         updateNodeFile(selectedNodeId, uploadData.key, metadata);
+        clearNodeCsvData(selectedNodeId);
 
-        // Create a nice summary message
-        let summary = `File "${file.name}" uploaded`;
-        if (metadata.fileType === 'csv' && metadata.columns) {
-          summary += `\n\nColumns: ${metadata.columns.join(', ')}`;
-          summary += `\nRows: ${metadata.rowCount}`;
-        } else if (metadata.fileType === 'json' && metadata.schema) {
-          summary += `\n\nSchema: ${Object.keys(metadata.schema).join(', ')}`;
-        }
+        // Clear localStorage after successful upload
+        const storageKey = `csv-edit-${selectedNodeId}`;
+        localStorage.removeItem(storageKey);
 
-        addChatMessage({
-          role: 'assistant',
-          content: summary
+        addNotification({
+          type: 'success',
+          title: 'File Uploaded',
+          message: `${selectedNode.fileName} uploaded to AWS`
         });
       } else {
         addNotification({
@@ -192,13 +272,12 @@ export default function EditorPanel() {
       addNotification({
         type: 'error',
         title: 'Upload Error',
-        message: error instanceof Error ? error.message : 'Failed to upload file'
+        message: error instanceof Error ? error.message : 'Failed to upload file to AWS'
       });
     } finally {
       setUploadingNodeId(null);
-      e.target.value = '';
     }
-  }, [selectedNodeId, updateNodeFile, addNotification]);
+  }, [selectedNodeId, selectedNode, updateNodeFile, clearNodeCsvData, addNotification]);
 
   const handleFileDownload = useCallback(() => {
     if (!selectedNode?.fileId) return;
@@ -210,6 +289,19 @@ export default function EditorPanel() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  }, [selectedNode]);
+
+  const handleDownloadCSV = useCallback(() => {
+    if (!selectedNode?.csvData || !selectedNode?.fileName) return;
+
+    const link = document.createElement('a');
+    const blob = new Blob([selectedNode.csvData], { type: 'text/csv' });
+    link.href = URL.createObjectURL(blob);
+    link.download = selectedNode.fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
   }, [selectedNode]);
 
   const handleSaveName = useCallback(() => {
@@ -278,16 +370,18 @@ export default function EditorPanel() {
               </div>
               {selectedNode.type === 'input-file' && (
                 <div className="file-actions">
-                  <label className="file-upload-btn">
-                    <Upload size={14} />
-                    <span>Upload File</span>
-                    <input
-                      type="file"
-                      onChange={handleFileUpload}
-                      disabled={uploadingNodeId === selectedNodeId}
-                      style={{ display: 'none' }}
-                    />
-                  </label>
+                  {!selectedNode.csvData && (
+                    <label className="file-upload-btn">
+                      <Upload size={14} />
+                      <span>Upload File</span>
+                      <input
+                        type="file"
+                        onChange={handleFileUpload}
+                        disabled={uploadingNodeId === selectedNodeId}
+                        style={{ display: 'none' }}
+                      />
+                    </label>
+                  )}
                   {selectedNode.fileId && (
                     <span className="file-indicator">{selectedNode.fileId}</span>
                   )}
@@ -383,7 +477,29 @@ export default function EditorPanel() {
                 />
               </div>
             )}
-            {selectedNode.type !== 'compute' && (
+            {selectedNode.type === 'input-file' && selectedNode.csvData && (
+              <CSVEditor
+                data={selectedNode.csvData}
+                fileName={selectedNode.fileName || 'Untitled'}
+                nodeId={selectedNodeId!}
+                onDataChange={(data) => updateNodeCsvData(selectedNodeId!, data, selectedNode.fileName)}
+                onUpload={handleUploadToAWS}
+                onCancel={() => {
+                  clearNodeCsvData(selectedNodeId!);
+                  const storageKey = `csv-edit-${selectedNodeId}`;
+                  localStorage.removeItem(storageKey);
+                }}
+                isUploading={uploadingNodeId === selectedNodeId}
+              />
+            )}
+            {selectedNode.type === 'output-file' && selectedNode.csvData && (
+              <CSVViewer
+                data={selectedNode.csvData}
+                fileName={selectedNode.fileName || 'Output'}
+                onDownload={handleDownloadCSV}
+              />
+            )}
+            {selectedNode.type !== 'compute' && !selectedNode.csvData && (
               <div className="empty-state">
                 <HardDrive size={48} strokeWidth={1} />
                 <h3>{selectedNode.type === 'input-file' ? 'Input File' : 'Output File'}</h3>

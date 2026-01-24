@@ -23,6 +23,8 @@ export interface HPCNode {
   out: string[];
   fileId?: string; // S3 file ID for input/output file nodes
   fileMetadata?: FileMetadata; // Analysis of uploaded file
+  csvData?: string; // Local CSV data for editing before upload
+  fileName?: string; // Original file name
   parallelization?: {
     strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
     estimatedCores?: number; // Suggested number of cores to use
@@ -67,6 +69,8 @@ interface HPCStore {
   updateNodeCode: (nodeId: string, code: string) => void;
   updateNodeStatus: (nodeId: string, status: NodeStatus) => void;
   updateNodeFile: (nodeId: string, fileId: string, metadata?: FileMetadata) => void;
+  updateNodeCsvData: (nodeId: string, csvData: string, fileName?: string) => void;
+  clearNodeCsvData: (nodeId: string) => void;
   updateNodeParallelization: (nodeId: string, parallelization: HPCNode['parallelization']) => void;
   resetAllStatuses: () => void;
   setIsRunning: (running: boolean) => void;
@@ -164,6 +168,24 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
       ...state.graph,
       nodes: state.graph.nodes.map((node) =>
         node.id === nodeId ? { ...node, fileId, fileMetadata: metadata } : node
+      )
+    }
+  })),
+
+  updateNodeCsvData: (nodeId, csvData, fileName) => set((state) => ({
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === nodeId ? { ...node, csvData, fileName } : node
+      )
+    }
+  })),
+
+  clearNodeCsvData: (nodeId) => set((state) => ({
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === nodeId ? { ...node, csvData: undefined, fileName: undefined } : node
       )
     }
   })),
