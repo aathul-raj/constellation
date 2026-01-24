@@ -65,11 +65,38 @@ body {
 
 .dashboard-main {
   flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1.2fr 0.8fr;
-  gap: 1px;
+  display: flex;
   background: var(--border-color);
   overflow: hidden;
+}
+
+.dashboard-main > div {
+  background: var(--bg-secondary);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.resize-handle {
+  width: 4px;
+  background: var(--border-color);
+  cursor: col-resize;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.resize-handle:hover {
+  background: var(--accent-primary);
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 0;
+  bottom: 0;
 }
 
 /* Header */
@@ -265,6 +292,7 @@ body {
   flex-direction: column;
   background: var(--bg-secondary);
   overflow: hidden;
+  height: 100%;
 }
 
 .node-count {
@@ -360,6 +388,7 @@ body {
   flex-direction: column;
   background: var(--bg-secondary);
   overflow: hidden;
+  height: 100%;
 }
 
 .node-badge {
@@ -812,6 +841,7 @@ body {
   flex-direction: column;
   background: var(--bg-secondary);
   overflow: hidden;
+  height: 100%;
 }
 
 .status-indicator {

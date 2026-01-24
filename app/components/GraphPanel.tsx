@@ -7,6 +7,7 @@ import { useHPCStore } from '../store/hpc-store';
 import { transformToReagraph, getStatusColor } from '../utils/graph-transform';
 import { AddNodeModal } from './AddNodeModal';
 import { ConnectionToolbar } from './ConnectionToolbar';
+import { DeleteEdgeToolbar } from './DeleteEdgeToolbar';
 
 export default function GraphPanel() {
   const { graph, selectedNodeId, selectNode, setGraph } = useHPCStore();
@@ -17,6 +18,8 @@ export default function GraphPanel() {
   const [isConnectionMode, setIsConnectionMode] = useState(false);
   const [connectionSource, setConnectionSource] = useState<string | null>(null);
   const [connectionTarget, setConnectionTarget] = useState<string | null>(null);
+  const [isDeleteMode, setIsDeleteMode] = useState(false);
+  const [selectedEdge, setSelectedEdge] = useState<{ source: string; target: string } | null>(null);
 
   const { nodes, edges } = useMemo(() => transformToReagraph(graph), [graph]);
 
@@ -51,6 +54,9 @@ export default function GraphPanel() {
     // Output nodes can only be targets
     if (targetNode.type === 'input-file') return false;
 
+    // Output nodes can only have 1 incoming connection
+    if (targetNode.type === 'output-file' && targetNode.in.length >= 1) return false;
+
     // Check if connection already exists
     const connectionExists = sourceNode.out.includes(targetId);
     if (connectionExists) return false;
@@ -59,6 +65,9 @@ export default function GraphPanel() {
   }, [graph.nodes]);
 
   const handleNodeClick = useCallback((node: GraphNode) => {
+    // Ignore node clicks in delete mode
+    if (isDeleteMode) return;
+
     if (isConnectionMode) {
       // Connection mode: select source and target
       if (!connectionSource) {
@@ -96,7 +105,7 @@ export default function GraphPanel() {
       // Normal mode: select node
       selectNode(selectedNodeId === node.id ? null : node.id);
     }
-  }, [isConnectionMode, connectionSource, connectionTarget, selectNode, selectedNodeId, graph.nodes, canConnect]);
+  }, [isConnectionMode, connectionSource, connectionTarget, selectNode, selectedNodeId, graph.nodes, canConnect, isDeleteMode]);
 
   const handleAddConnection = () => {
     if (!connectionSource || !connectionTarget) return;
@@ -140,6 +149,98 @@ export default function GraphPanel() {
       setConnectionSource(null);
       setConnectionTarget(null);
     }
+    // Exit delete mode when entering connection mode
+    if (newMode && isDeleteMode) {
+      setIsDeleteMode(false);
+      setSelectedEdge(null);
+    }
+  };
+
+  const toggleDeleteMode = () => {
+    const newMode = !isDeleteMode;
+    setIsDeleteMode(newMode);
+    if (!newMode) {
+      setSelectedEdge(null);
+    }
+    // Exit connection mode when entering delete mode
+    if (newMode && isConnectionMode) {
+      setIsConnectionMode(false);
+      setConnectionSource(null);
+      setConnectionTarget(null);
+    }
+  };
+
+  const handleEdgeClick = useCallback((edge: GraphEdge) => {
+    if (isDeleteMode) {
+      setSelectedEdge({ source: edge.source, target: edge.target });
+    }
+  }, [isDeleteMode]);
+
+  const handleDeleteEdge = () => {
+    if (!selectedEdge) return;
+
+    const targetNode = graph.nodes.find(n => n.id === selectedEdge.target);
+
+    // Check if deleting this edge would leave a non-input node with no incoming connections
+    const willBeOrphaned = targetNode &&
+                          targetNode.type !== 'input-file' &&
+                          targetNode.in.length === 1 &&
+                          targetNode.in[0] === selectedEdge.source;
+
+    if (willBeOrphaned) {
+      const confirmed = window.confirm(
+        `Deleting this connection will leave "${targetNode.name}" with no incoming connections. The node will be deleted. Continue?`
+      );
+      if (!confirmed) {
+        setSelectedEdge(null);
+        return;
+      }
+    }
+
+    // Remove the edge and potentially the orphaned node
+    setGraph({
+      ...graph,
+      nodes: graph.nodes
+        .filter(node => {
+          // Remove orphaned node
+          if (willBeOrphaned && node.id === selectedEdge.target) {
+            return false;
+          }
+          return true;
+        })
+        .map(node => {
+          // Remove outgoing connection from source
+          if (node.id === selectedEdge.source) {
+            return {
+              ...node,
+              out: node.out.filter(id => id !== selectedEdge.target)
+            };
+          }
+          // Remove incoming connection from target
+          if (node.id === selectedEdge.target) {
+            return {
+              ...node,
+              in: node.in.filter(id => id !== selectedEdge.source)
+            };
+          }
+          // Remove any connections TO the deleted node
+          if (willBeOrphaned) {
+            return {
+              ...node,
+              out: node.out.filter(id => id !== selectedEdge.target)
+            };
+          }
+          return node;
+        })
+    });
+
+    setSelectedEdge(null);
+    setIsDeleteMode(false);
+  };
+
+  const handleCancelDelete = () => {
+    setSelectedEdge(null);
+    setIsDeleteMode(false);
   };
 
   const toggle3D = () => {
@@ -201,6 +302,9 @@ export default function GraphPanel() {
   const sourceNodeName = graph.nodes.find(n => n.id === connectionSource)?.name;
   const targetNodeName = graph.nodes.find(n => n.id === connectionTarget)?.name;
 
+  const selectedEdgeSourceName = selectedEdge ? graph.nodes.find(n => n.id === selectedEdge.source)?.name : undefined;
+  const selectedEdgeTargetName = selectedEdge ? graph.nodes.find(n => n.id === selectedEdge.target)?.name : undefined;
+
   // Determine selections for graph
   const selections = useMemo(() => {
     if (isConnectionMode) {
@@ -209,8 +313,11 @@ export default function GraphPanel() {
       if (connectionTarget) sel.push(connectionTarget);
       return sel;
     }
+    if (isDeleteMode && selectedEdge) {
+      return [selectedEdge.source, selectedEdge.target];
+    }
     return selectedNodeId ? [selectedNodeId] : [];
-  }, [isConnectionMode, connectionSource, connectionTarget, selectedNodeId]);
+  }, [isConnectionMode, connectionSource, connectionTarget, selectedNodeId, isDeleteMode, selectedEdge]);
 
   return (
     <div className="graph-panel">
@@ -227,6 +334,15 @@ export default function GraphPanel() {
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+            </svg>
+          </button>
+          <button
+            className={`control-btn ${isDeleteMode ? 'active' : ''}`}
+            onClick={toggleDeleteMode}
+            title={isDeleteMode ? 'Exit delete mode' : 'Delete connections'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
             </svg>
           </button>
           <button
@@ -276,6 +392,7 @@ export default function GraphPanel() {
           nodes={graphNodes}
           edges={graphEdges}
           onNodeClick={handleNodeClick}
+          onEdgeClick={handleEdgeClick}
           selections={selections}
           layoutType={layoutType}
           labelType="all"
@@ -299,6 +416,13 @@ export default function GraphPanel() {
           targetNodeName={targetNodeName}
           onAddConnection={handleAddConnection}
           onCancel={handleCancelConnection}
+        />
+
+        <DeleteEdgeToolbar
+          sourceNode={selectedEdgeSourceName}
+          targetNode={selectedEdgeTargetName}
+          onDelete={handleDeleteEdge}
+          onCancel={handleCancelDelete}
         />
       </div>
 
