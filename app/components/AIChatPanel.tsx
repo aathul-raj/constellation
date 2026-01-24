@@ -21,45 +21,38 @@ export default function AIChatPanel() {
   const generateResponse = useCallback(async (userMessage: string) => {
     setIsTyping(true);
 
-    // Simulate AI thinking time
-    await new Promise(resolve => setTimeout(resolve, 800 + Math.random() * 700));
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: userMessage,
+          graph,
+          selectedNodeId
+        }),
+      });
 
-    const lowerMessage = userMessage.toLowerCase();
-    let response = '';
+      const data = await res.json();
 
-    // Simple rule-based responses for demonstration
-    if (lowerMessage.includes('status') || lowerMessage.includes('progress')) {
-      const completed = graph.nodes.filter(n => n.status === 'completed').length;
-      const running = graph.nodes.filter(n => n.status === 'running').length;
-      const queued = graph.nodes.filter(n => n.status === 'queued').length;
-      response = `Pipeline Status:\n- Completed: ${completed}/${graph.nodes.length}\n- Running: ${running}\n- Queued: ${queued}`;
-    } else if (lowerMessage.includes('node') || lowerMessage.includes('selected')) {
-      if (selectedNodeId) {
-        const node = graph.nodes.find(n => n.id === selectedNodeId);
-        if (node) {
-          response = `Selected: ${node.label}\nType: ${node.type}\nStatus: ${node.status}\nDependencies: ${node.in.length > 0 ? node.in.join(', ') : 'None'}\nOutputs to: ${node.out.length > 0 ? node.out.join(', ') : 'None'}`;
-        }
+      if (data.error) {
+        addChatMessage({
+          role: 'assistant',
+          content: `Error: ${data.error}`
+        });
       } else {
-        response = 'No node currently selected. Click a node in the graph to inspect it.';
+        addChatMessage({
+          role: 'assistant',
+          content: data.response
+        });
       }
-    } else if (lowerMessage.includes('help')) {
-      response = `Available commands:\n- Ask about "status" to see pipeline progress\n- Ask about "selected node" for node details\n- Ask about "resources" for cluster info\n- Click "Run Batch" to execute the pipeline`;
-    } else if (lowerMessage.includes('resource') || lowerMessage.includes('cluster')) {
-      const totalCores = graph.nodes.reduce((sum, n) => sum + (n.resources?.cores || 0), 0);
-      const totalGPU = graph.nodes.reduce((sum, n) => sum + (n.resources?.gpu || 0), 0);
-      response = `Cluster Resources Required:\n- Total CPU Cores: ${totalCores}\n- Total GPUs: ${totalGPU}\n- Nodes: ${graph.nodes.length}`;
-    } else if (lowerMessage.includes('optimize') || lowerMessage.includes('suggest')) {
-      response = `Optimization suggestions:\n1. Preprocess nodes can run in parallel\n2. Consider increasing GPU allocation for training\n3. Data ingestion could benefit from parallel I/O`;
-    } else {
-      response = `I can help you monitor and understand your HPC pipeline. Try asking about:\n- Pipeline status\n- Selected node details\n- Cluster resources\n- Optimization suggestions`;
+    } catch (error) {
+      addChatMessage({
+        role: 'assistant',
+        content: 'Failed to connect to AI service. Please try again.'
+      });
+    } finally {
+      setIsTyping(false);
     }
-
-    addChatMessage({
-      role: 'assistant',
-      content: response
-    });
-
-    setIsTyping(false);
   }, [graph, selectedNodeId, addChatMessage]);
 
   const handleSubmit = async (e: React.FormEvent) => {
