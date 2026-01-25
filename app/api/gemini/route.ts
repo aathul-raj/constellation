@@ -55,6 +55,9 @@ export async function POST(request: NextRequest) {
       type: n.type
     })) || [];
 
+    // Get all input nodes for file metadata context (define early for use in prompt)
+    const allInputNodes = graph?.nodes?.filter((n: any) => n.type === 'input-file') || [];
+
     const historyText = history
       ? `RECENT CHAT HISTORY (READ THIS CAREFULLY - user already provided this info):\n${history.map((h: any) => `${h.role.toUpperCase()}: ${h.content}`).join('\n')}\n\nIMPORTANT: DO NOT ask about anything the user already mentioned in the history above.\n`
       : '';
@@ -82,16 +85,33 @@ CRITICAL - The user is answering your previous questions:
 - If this is a 'create_node' intent: Update with the new info without losing existing fields.`
       : '';
 
-    const systemPrompt = `You are an AI assistant for an HPC (High-Performance Computing) workflow builder.
+    // Build file metadata context for the model
+    const fileMetadataContext = allInputNodes.length > 0 ? `
+CRITICAL - FILE METADATA AVAILABLE:
+${allInputNodes.map((n: any) => {
+      const files = n.files || [];
+      const meta = files[0]?.metadata || n.fileMetadata;
+      if (meta) {
+        return `- ${n.name}: ${meta.fileName || 'unknown'} (${meta.fileType || 'unknown'}), ${meta.rowCount || '?'} rows, columns: ${meta.columns?.join(', ') || 'unknown'}`;
+      }
+      return `- ${n.name}: file uploaded`;
+    }).join('\n')}
 
-Users describe computational tasks in natural language, and you help them write PARALLELIZABLE code or create new pipeline nodes.
+IMPORTANT: You already have file size and format info above. DO NOT ask about:
+- File size, row count, or data volume
+- File format (CSV, JSON, etc.)
+- Column names or schema
+These are already known from the metadata. Proceed with pipeline generation.
+` : '';
+
+    const systemPrompt = `You are a concise AI assistant for an HPC workflow builder. Be direct and brief in responses.
 
 ${pendingIntentContext}
 
 ${lastNodeContext}
 
 ${historyText}
-
+${fileMetadataContext}
 CURRENT PIPELINE STATE:
 ${graph ? JSON.stringify(graph, null, 2) : "No graph provided"}
 
@@ -139,33 +159,13 @@ IMPORTANT: Generate code that works with the ACTUAL columns and data shown above
 The 'in_df' parameter will contain this data structure.
 ` : ''}
 
-YOUR TASKS:
-1. **Detect intent**: Determine if the user wants to:
-   - **Generate an ENTIRE pipeline** (e.g., "build a pipeline to process sales data", "I want to do X with my dataset")
-   - Create a NEW node (e.g., "add a filtering step", "create a compute node that aggregates")
-   - Edit an existing node (connections, code, name)
-   - Update code on the selected node
-   - Just ask a question
+YOUR TASKS (be concise):
+1. **Detect intent**: pipeline | node creation | edit | code update | chat
+2. **For PIPELINE requests**: If file metadata exists, DO NOT ask about file size/format. Max 1-2 questions if needed.
+   - Design HPC graph. Generate all nodes, edges, and code.
+3. **For node creation**: Extract type, name, parent node. Generate Python code for compute nodes.
 
-2. **For FULL PIPELINE requests** (generate_pipeline intent):
-   - ALWAYS ask clarifying questions first (minimum one round)
-   - Understand: desired outputs, transformations, scale, performance needs
-  - If input file exists, reference its metadata in questions and DO NOT ask for size/input format already known
-   - When ready: design an HPC-optimized dependency graph
-   - Apply parallelization patterns: split-execute-reduce, parallel-columns, map-reduce
-   - Generate all nodes with proper edges and code
-  - **If the user wants to integrate with existing nodes**, DO NOT create duplicate input/output nodes.
-    - Use existing node IDs from the CURRENT PIPELINE STATE in the edges.
-    - Example: If user says “use Input A”, set edges like {"from": "<existing-input-id>", "to": "compute_1"}.
-
-3. **For node creation requests**:
-   - Extract the node type they want: input-file (uploading data), compute (processing), or output-file (results)
-   - Extract the node name
-   - Identify which parent node it should connect from (usually the most recent node before it)
-   - If compute node: generate the Python code skeleton
-   - If you can't determine something, ask for clarification
-
-4. **For code updates**: Generate parallelizable code for the selected node
+4. **For code updates**: Generate parallelizable code
 
 PARALLELIZATION PRINCIPLES:
 1. **Chunk-based processing**: Process data in independent chunks that can run in parallel
@@ -572,16 +572,10 @@ IMPORTANT:
     const hasRecentEditContext = 
       /(add|insert|modify|update|extend|expand)\b/.test(editContextFromHistory) &&
       /(node|nodes|reducer|compute|pipeline|graph|output)\b/.test(editContextFromHistory);
-    
-    let isLikelyPipelineRequest =
-      /(create|build|design|generate|make)\s+(a\s+)?(complex|simple|full|complete|entire|whole)?\s*?(pipeline|workflow)/.test(promptLower) ||
-      /end-?to-?end/.test(promptLower) ||
-      /process\s+this\s+(csv|parquet|json|xlsx)/.test(promptLower) ||
-      /(multi-step|multiple\s+steps?|several\s+steps?)/.test(promptLower) ||
-      pendingIntent?.intent === 'generate_pipeline';
 
-    // Check if we have file metadata anywhere in the graph
-    const allInputNodes = graph?.nodes?.filter((n: any) => n.type === 'input-file') || [];
+    // ==========================================
+    // FILE METADATA DETECTION - Check ALL input nodes in the graph
+    // ==========================================
     const graphHasFileMetadata = allInputNodes.some((n: any) =>
       (n.fileMetadata && Object.keys(n.fileMetadata).length > 0) ||
       (Array.isArray(n.files) && n.files.some((f: any) => f?.metadata)) ||
@@ -589,156 +583,145 @@ IMPORTANT:
     );
     const graphHasComputeNodes = (graph?.nodes?.filter((n: any) => n.type === 'compute')?.length || 0) > 0;
     const graphHasOutputNodes = (graph?.nodes?.filter((n: any) => n.type === 'output-file')?.length || 0) > 0;
-    const hasExistingPipeline = graphHasComputeNodes || (allInputNodes.length > 0 && graphHasOutputNodes);
+    const hasExistingPipeline = graphHasComputeNodes || graphHasOutputNodes;
 
-    // Detect edit requests - these should skip clarification and go straight to editing
-    const isPipelineEditRequest =
+    // ==========================================
+    // INTENT DETECTION - Detect pipeline vs single node requests
+    // ==========================================
+    
+    // Detect requests that involve MULTIPLE nodes or complex graph changes
+    const isMultiNodeRequest =
+      // Adding multiple nodes at once: "add 2 new nodes", "create 3 new X nodes", "add 2 new process names nodes"
+      /add\s+(\d+|two|three|four|five|several|multiple|a\s+few)\s+(new\s+)?(\w+\s+)*(nodes?|compute|steps?)/i.test(promptLower) ||
+      /(create|make|build)\s+(\d+|two|three|four|five|several|multiple)\s+(new\s+)?(\w+\s+)*(nodes?|compute|steps?)/i.test(promptLower) ||
+      // Reducer/combiner patterns: "feed into a reducer", "combine their outputs", "new reducer node"
+      /(reducer|combiner)\s*(node)?/i.test(promptLower) ||
+      /(combine|merge|aggregate)\s+(their|the|all|these)?\s*(outputs?|results?|into)/i.test(promptLower) ||
+      /feed\s+(their|the|all|these)?\s*(results?|outputs?)?\s*(into|to)/i.test(promptLower) ||
+      // Complex modification: "make this more complex", "let's make it more sophisticated"
+      /(make|let'?s\s+make)\s+(this|it)\s+(more\s+)?(complex|sophisticated|elaborate|advanced)/i.test(promptLower) ||
+      // Multiple operations described: "add X, then Y", "then feed into", "and then connect"
+      /then\s+(feed|send|connect|add|create|pass)/i.test(promptLower) ||
+      /,?\s*(and\s+)?then\s+\w+/i.test(promptLower) ||
+      // Parallel processing patterns
+      /(parallel|split|fan-?out|distribute)\s+(the|into|across|to)/i.test(promptLower) ||
+      // "that do the same thing as" - copying existing nodes
+      /do\s+the\s+same\s+(thing|operation|processing)/i.test(promptLower);
+
+    // Explicit pipeline keywords
+    const isExplicitPipelineKeyword =
+      /(create|build|design|generate|make)\s+(a\s+|an\s+|the\s+)?(new\s+)?(complex|simple|full|complete|entire|whole|multi-?step|hpc|parallel)?\s*?(pipeline|workflow|dag|dataflow)/i.test(promptLower) ||
+      /(i\s+)?(need|want)\s+(a\s+|an\s+)?(new\s+)?(pipeline|workflow)/i.test(promptLower);
+
+    // Combined: either explicit pipeline request OR multi-node modification
+    const isExplicitPipelineRequest =
+      isExplicitPipelineKeyword ||
+      isMultiNodeRequest ||
+      pendingIntent?.intent === 'generate_pipeline';
+
+    // Edit requests for existing graphs that involve SINGLE nodes
+    const isNodeEditRequest =
       (graph?.nodes?.length || 0) > 0 &&
+      !isMultiNodeRequest &&  // Multi-node edits go through pipeline flow
       (
-        // Direct edit keywords with pipeline context
-        (/(add|insert|modify|update|extend|expand|append|rework|refactor|remove|delete|disconnect|connect)\b/.test(promptLower) &&
-         /(pipeline|workflow|graph|node|nodes|reducer|combine|merge|output|compute|input|connection)\b/.test(promptLower)) ||
-        // "let's modify/change/update this/the pipeline" (with anything after)
-        /let'?s\s+(modify|change|update|edit|adjust|tweak)/.test(promptLower) ||
-        // "modify/change this pipeline"
-        /(modify|change|update|edit)\s+(this|the)\s+(pipeline|graph|workflow)/.test(promptLower) ||
-        // "add X more Y nodes" pattern
-        /add\s+(\w+\s+)?more\s+\w*\s*(node|compute|process)/.test(promptLower) ||
-        // Confirmation of a previous edit proposal
+        // Direct edit keywords for nodes
+        (/(add|insert|modify|update|remove|delete|disconnect|connect|change|edit)\b/.test(promptLower) &&
+         /(node|nodes|compute|input|output|connection|step)\b/.test(promptLower)) ||
+        // "let's modify/change/update" patterns (without multi-node indicators)
+        /let'?s\s+(modify|change|update|edit|adjust|tweak)\s+(the|this|a)\s+(\w+\s+)?(node|connection)/i.test(promptLower) ||
+        // Confirmation of a previous edit
         (isConfirmation && assistantProposedAction && hasRecentEditContext)
       );
 
+    // Single node creation - user wants exactly ONE node
+    const isSingleNodeRequest =
+      !isMultiNodeRequest &&
+      (
+        // "create a node" / "add a node" / "make a compute node"
+        /(create|add|make|build)\s+(a\s+|an\s+)?(new\s+)?(single\s+)?(compute|processing|input|output)?\s*node/i.test(promptLower) ||
+        // "add a step that..." / "create a step to..."
+        /(create|add|make)\s+(a\s+|an\s+)?(new\s+)?step\s+(that|to|which|for)/i.test(promptLower)
+      );
+
     // Log detection for debugging
-    console.log('[Edit Detection]', {
-      promptLower: promptLower.substring(0, 100),
-      isConfirmation,
-      assistantProposedAction,
-      hasRecentEditContext,
-      isPipelineEditRequest,
+    console.log('[Intent Detection]', {
+      promptLower: promptLower.substring(0, 80),
+      isMultiNodeRequest,
+      isExplicitPipelineKeyword,
+      isExplicitPipelineRequest,
+      isNodeEditRequest,
+      isSingleNodeRequest,
       graphNodeCount: graph?.nodes?.length || 0,
       graphHasFileMetadata,
       hasExistingPipeline
     });
 
-    if (isPipelineEditRequest) {
-      isLikelyPipelineRequest = true;
+    // Check if user described specific transformations (means we can skip clarification)
+    const hasSpecificTransformation = 
+      /(add|create|compute|calculate|concat|sum|average|mean|count|max|min|filter|group|sort|merge|join|index|letter)\s+(a\s+|new\s+|the\s+)?(column|field|value|row)/i.test(promptLower) ||
+      /\b(concat|concatenat|sum|index|letter|alphabetic|join|split|filter|group|aggregate|merge|sort|transform)\b/i.test(promptLower) ||
+      /\b(that|which)\s+(does|performs|computes|calculates|adds|creates|is)/i.test(promptLower);
+
+    // ==========================================
+    // ROUTING LOGIC - Route to appropriate handler
+    // ==========================================
+    
+    // If there's an existing pipeline and user wants to edit a single node, route to edit handler
+    if (isNodeEditRequest && !isExplicitPipelineRequest) {
+      console.log('[Routing] Single node edit request detected');
+      // Will be handled by edit prompt below
+    }
+    // If user wants a pipeline/multi-node operation
+    else if (isExplicitPipelineRequest && !pendingIntent) {
+      // Check if we can proceed without clarification
+      const canProceedWithoutClarification = 
+        graphHasFileMetadata ||  // We have file metadata
+        hasExistingPipeline ||   // There's already a pipeline to modify
+        hasSpecificTransformation; // User described what they want clearly
+      
+      if (canProceedWithoutClarification) {
+        console.log('[Routing] Pipeline request with enough context - proceeding to generation');
+        // Continue to model call
+      } else {
+        // No file uploaded and no clear transformation described
+        console.log('[Routing] Pipeline request but no file/context - asking for details');
+        return NextResponse.json({
+          intent: 'generate_pipeline',
+          completeness: 'needs_clarification',
+          understoodSoFar: `Pipeline request: "${prompt}"`,
+          clarifyingQuestions: [
+            'Upload a data file or describe the input format and size.',
+            'What transformations do you need?'
+          ],
+          message: 'Need more info to build the pipeline.'
+        });
+      }
+    }
+    // If user wants a single node
+    else if (isSingleNodeRequest) {
+      console.log('[Routing] Single node creation request');
+      // Let the model handle this as create_node intent
+    }
+    // Default: Let the model figure out the intent
+    else {
+      console.log('[Routing] Ambiguous request - letting model determine intent');
+      // Continue to model call
     }
 
-    const buildPipelineClarification = () => {
-      const inputNodes = allInputNodes;
-      const outputNodes = graph?.nodes?.filter((n: any) => n.type === 'output-file') || [];
-      const promptText = prompt || '';
-      const referencedNode =
-        graph?.nodes?.find((n: any) => promptText.toLowerCase().includes(n.name.toLowerCase())) ||
-        (selectedNode?.type === 'input-file' ? selectedNode : null);
+    // Don't set isLikelyPipelineRequest unless it's EXPLICIT
+    const isLikelyPipelineRequest = isExplicitPipelineRequest || pendingIntent?.intent === 'generate_pipeline';
 
-      // Use the graph-level metadata check
-      const hasInputFileMetadata = graphHasFileMetadata;
-      
-      // Check if user has described specific transformations in their request
-      const hasSpecificTransformation = 
-        // Column operations
-        /(add|create|derive|compute|calculate|concat|sum|average|mean|count|max|min)\s+(a\s+)?(new\s+)?(column|field|value)/i.test(promptText) ||
-        // Specific operations described
-        /\b(concat|concatenat|sum|index|letter|alphabetic|join|split|filter|group|aggregate|merge|sort|transform)\b/i.test(promptText) ||
-        // "that does X" or "which does X" patterns
-        /\b(that|which)\s+(does|performs|computes|calculates|adds|creates)/i.test(promptText) ||
-        // Specific formulas or patterns described
-        /\b(ie|i\.e\.|e\.g\.|for example|such as)\b/i.test(promptText);
-      
-      // If we have file metadata, we know the format and can infer size
-      const hasInputFormat = hasInputFileMetadata || /\b(csv|parquet|json|xlsx)\b/.test(promptLower);
-      const hasSize =
-        hasInputFileMetadata || // File metadata implies we know the size
-        hasExistingPipeline || // Existing pipeline means user already provided this info
-        /\b\d+(\.\d+)?\s*(mb|gb|kb|tb)\b/.test(promptLower) ||
-        /(several|many|few|hundreds?|thousands?)\s+(hundred|thousand|million)?\s*(mb|gb|kb|tb)/.test(promptLower) ||
-        /(large|huge|massive|big|small)\s+(file|dataset|csv|data)/.test(promptLower);
-      
-      // If there's an existing output node, we know the output format
-      const hasOutputFormat =
-        outputNodes.length > 0 || // Existing output node implies we know the format
-        hasInputFileMetadata || // Often output matches input format
-        /\boutput\b[^\n]{0,60}\b(csv|parquet|json|xlsx|table|database)\b/.test(promptLower) ||
-        /\b(csv|parquet|json|xlsx)\s+output\b/.test(promptLower);
-
-      const clarifyingQuestions: string[] = [];
-      
-      // Only ask about size if we don't have file metadata AND no existing pipeline
-      if (!hasSize && !hasInputFileMetadata && !hasExistingPipeline) {
-        clarifyingQuestions.push('What is the approximate size of the dataset (e.g., MB/GB)?');
-      }
-      // Only ask about input format if we don't have file metadata
-      if (!hasInputFormat && !hasInputFileMetadata) {
-        clarifyingQuestions.push('What is the input format (e.g., CSV, Parquet)?');
-      }
-      // Only ask about output format if no existing output and not inferrable
-      if (!hasOutputFormat && outputNodes.length === 0 && !hasInputFileMetadata) {
-        clarifyingQuestions.push('What output format do you need (e.g., CSV, database table)?');
-      }
-
-      // If we have all file info AND user described specific transformations, skip clarification entirely
-      if ((hasInputFileMetadata || hasExistingPipeline) && hasSpecificTransformation) {
-        // We have enough info - don't ask any questions, just generate
-        console.log('[Clarification] Skipping - have file metadata and specific transformation');
-        return null; // Signal to proceed with generation
-      }
-
-      // If we already have all the info from file metadata but no transformation specified
-      if ((hasInputFileMetadata || hasExistingPipeline) && clarifyingQuestions.length === 0 && !hasSpecificTransformation) {
-        // Only ask about transformation if user hasn't described one
-        clarifyingQuestions.push('What specific transformations would you like to perform?');
-      }
-
-      if (!referencedNode && graph?.nodes?.length) {
-        if (inputNodes.length > 1) {
-          clarifyingQuestions.push('Which existing input node should this pipeline start from?');
-        } else if (inputNodes.length === 1 && outputNodes.length > 0 && !hasSpecificTransformation) {
-          clarifyingQuestions.push('Should I connect the new pipeline to your existing output node, or create a new output?');
-        } else if (inputNodes.length === 0 && graph?.nodes?.length > 0) {
-          clarifyingQuestions.push('Which existing node should this pipeline attach to?');
-        }
-      }
-
-      // If we still have no questions, we have enough info - don't ask unnecessary questions
-      if (clarifyingQuestions.length === 0) {
-        console.log('[Clarification] Skipping - no questions needed');
-        return null; // Signal to proceed with generation
-      }
-
-      return NextResponse.json({
-        intent: 'generate_pipeline',
-        completeness: 'needs_clarification',
-        understoodSoFar: `You want an end-to-end pipeline based on: "${prompt}"`,
-        clarifyingQuestions,
-        message: 'I can build the pipeline. I need a few details first.'
-      });
-    };
-
-    // For pipeline edit requests, skip clarification entirely
-    if (isPipelineEditRequest) {
-      console.log('[Pipeline Edit] Detected edit request, skipping clarification');
-      // Continue to edit prompt below
-    } else if (isLikelyPipelineRequest && (!pendingIntent || pendingIntent.intent !== 'generate_pipeline')) {
-      const clarificationResponse = buildPipelineClarification();
-      if (clarificationResponse) {
-        return clarificationResponse;
-      }
-      // If buildPipelineClarification returns null, we have enough info - continue to generation
-      console.log('[Pipeline] Have enough info, proceeding to generation');
-    }
-
-    // For pipeline edit requests (including confirmations), use a specialized prompt
+    // For node edit requests (including confirmations), use a specialized prompt
     let editPrompt = fullPrompt;
-    if (isPipelineEditRequest) {
+    if (isNodeEditRequest && !isExplicitPipelineRequest) {
       // Build context about the edit request from history
       const editContext = isConfirmation && hasRecentEditContext
         ? `The user previously requested: "${editContextFromHistory}"\nThe user is now confirming with: "${prompt}"`
-        : `The user wants to modify the existing pipeline: "${prompt}"`;
+        : `The user wants to modify the existing graph: "${prompt}"`;
       
       editPrompt = `${systemPrompt}
 
-CRITICAL: This is a PIPELINE EDIT request. You MUST respond with intent: "generate_pipeline" and completeness: "ready_to_generate".
+CRITICAL: This is a NODE EDIT request. You MUST respond with intent: "generate_pipeline" and completeness: "ready_to_generate".
 
 CURRENT GRAPH STATE (modify this):
 ${JSON.stringify(graph, null, 2)}
@@ -764,19 +747,19 @@ Response format:
 {
   "intent": "generate_pipeline",
   "completeness": "ready_to_generate",
-  "pipelineName": "Updated Pipeline",
+  "pipelineName": "Updated Graph",
   "nodes": [...new nodes only...],
   "edges": [...edges connecting new nodes to existing graph...],
   "editNodes": [...modifications to existing nodes...],
-  "message": "I've updated your pipeline..."
+  "message": "I've updated your graph..."
 }
 
 User request: ${prompt}`;
     }
 
-    console.log("Sending to Gemini...", isLikelyPipelineRequest ? "(using pipeline model)" : "(using lite model)", isPipelineEditRequest ? "[EDIT MODE]" : "");
-    const activeModel = isLikelyPipelineRequest ? pipelineModel : model;
-    const result = await activeModel.generateContent(isPipelineEditRequest ? editPrompt : fullPrompt);
+    console.log("Sending to Gemini...", isLikelyPipelineRequest ? "(using pipeline model)" : "(using lite model)", isNodeEditRequest ? "[EDIT MODE]" : "");
+    const activeModel = isLikelyPipelineRequest || isNodeEditRequest ? pipelineModel : model;
+    const result = await activeModel.generateContent((isNodeEditRequest && !isExplicitPipelineRequest) ? editPrompt : fullPrompt);
     const text = result.response.text();
     console.log("Raw response:", text);
 
@@ -797,7 +780,7 @@ User request: ${prompt}`;
       console.log("Failed to parse JSON, using raw text as message");
     }
 
-    if (isPipelineEditRequest && parsed?.intent === 'create_node') {
+    if (isNodeEditRequest && parsed?.intent === 'create_node') {
       const editRetryPrompt = `${systemPrompt}\n\nSTRICT OUTPUT REQUIREMENT:\n- You MUST respond with intent: \"generate_pipeline\" (NOT \"create_node\")\n- You are MODIFYING an existing pipeline/graph, not creating a single node\n- Include \"editNodes\" and/or new nodes + edges that attach to existing node IDs\n- Respond with valid JSON only\n\nUser request: ${prompt}`;
 
       const editRetryResult = await pipelineModel.generateContent(editRetryPrompt);
@@ -816,7 +799,7 @@ User request: ${prompt}`;
     }
 
     // If AI returned chat response for an edit request, force a retry with explicit instructions
-    if (isPipelineEditRequest && (parsed?.intent === 'chat' || parsed?.intent === 'generate_pipeline' && parsed?.completeness === 'needs_clarification')) {
+    if (isNodeEditRequest && (parsed?.intent === 'chat' || parsed?.intent === 'generate_pipeline' && parsed?.completeness === 'needs_clarification')) {
       console.log("AI returned chat/clarification for edit request - forcing pipeline generation");
       
       // Build the full edit context
@@ -875,34 +858,16 @@ RESPOND WITH JSON ONLY. NO QUESTIONS.`;
         console.error("Force edit failed to parse JSON:", forceEditText);
         parsed = {
           intent: "chat",
-          message: "I understood you want to modify the pipeline, but I had trouble generating the changes. Could you describe the modification more specifically?"
+          message: "I understood you want to modify the graph, but I had trouble generating the changes. Could you describe the modification more specifically?"
         };
       }
     }
 
     const hasPendingPipeline = pendingIntent?.intent === 'generate_pipeline';
 
-    if (isLikelyPipelineRequest && !isPipelineEditRequest && !hasPendingPipeline && parsed?.intent !== 'generate_pipeline') {
-      return buildPipelineClarification();
-    }
-
     const shouldRetryGeneratePipeline =
       parsed?.intent === 'chat' &&
       hasPendingPipeline;
-
-    const isPipelineRequest = (() => {
-      const historyText = Array.isArray(history)
-        ? history.map((h: any) => h?.content || '').join('\n')
-        : '';
-      const combined = [prompt || '', historyText, pendingIntent?.understoodSoFar || '']
-        .join('\n')
-        .toLowerCase();
-      // Match "create a pipeline", "build complex pipeline", "create a full workflow", etc.
-      return /(create|build|design|generate|make)\s+(a\s+)?(complex|simple|full|complete|entire|whole)?\s*?(pipeline|workflow)/.test(combined) ||
-        /end-?to-?end/.test(combined) ||
-        /process\s+this\s+(csv|parquet|json|xlsx)/.test(combined) ||
-        /(multi-step|multiple\s+steps?|several\s+steps?)/.test(combined);
-    })();
 
     const hasAnsweredPipelineBasics = (() => {
       const historyText = Array.isArray(history)
@@ -943,10 +908,12 @@ RESPOND WITH JSON ONLY. NO QUESTIONS.`;
 
     // Log detection states for debugging
     console.log("Pipeline detection:", {
-      isPipelineRequest,
+      isExplicitPipelineRequest,
+      isNodeEditRequest,
       hasPendingPipeline,
       parsedIntent: parsed?.intent,
       hasAnsweredBasics: hasAnsweredPipelineBasics,
+      graphHasFileMetadata,
       shouldRetry: shouldRetryGeneratePipeline || shouldForceGenerateAfterClarification
     });
 
@@ -981,23 +948,34 @@ User latest answer: ${prompt}`;
       }
     }
 
-    // Enforce at least one clarification round for new pipeline requests
+    // ONLY enforce clarification for new EXPLICIT pipeline requests when we DON'T have file metadata
+    // Skip clarification if we already have file info
     if (
-      (parsed?.intent === 'generate_pipeline' || (parsed?.intent === 'create_node' && isPipelineRequest)) &&
+      isExplicitPipelineRequest &&
       !pendingIntent &&
-      parsed?.completeness === 'ready_to_generate'
+      parsed?.completeness === 'ready_to_generate' &&
+      !graphHasFileMetadata &&
+      !hasExistingPipeline
     ) {
-      parsed = {
-        intent: 'generate_pipeline',
-        completeness: 'needs_clarification',
-        understoodSoFar: `You want an end-to-end pipeline based on: "${prompt}"`,
-        clarifyingQuestions: [
-          'What is the approximate size of the dataset (e.g., MB/GB)?',
-          'What is the input format (e.g., CSV, Parquet)?',
-          'What output format do you need (e.g., CSV, database table)?'
-        ],
-        message: 'I can build the pipeline. I need a few details first.'
-      };
+      // Only ask clarifying questions if we truly don't have info
+      const needsInputFormat = !/\b(csv|parquet|json|xlsx)\b/.test(promptLower);
+      const needsSize = !/\b\d+(\.\d+)?\s*(mb|gb|kb|tb)\b/.test(promptLower) &&
+        !/(large|huge|massive|big|small)\s+(file|dataset|csv|data)/.test(promptLower);
+      
+      const questions: string[] = [];
+      if (needsInputFormat) questions.push('What is the input format (e.g., CSV, Parquet)?');
+      if (needsSize) questions.push('What is the approximate size of the dataset?');
+      
+      if (questions.length > 0) {
+        parsed = {
+          intent: 'generate_pipeline',
+          completeness: 'needs_clarification',
+          understoodSoFar: `You want a pipeline based on: "${prompt}"`,
+          clarifyingQuestions: questions,
+          message: 'I can build the pipeline. I need a few details first.'
+        };
+      }
+      // If no questions needed, continue with generation
     }
 
     // If we have a pending pipeline and AI returned create_node or needs_clarification but user already answered basics
@@ -1071,18 +1049,25 @@ RESPOND WITH JSON ONLY.`;
       }
     }
 
-    if (isPipelineRequest && parsed?.intent === 'create_node' && !pendingIntent) {
-      parsed = {
-        intent: 'generate_pipeline',
-        completeness: 'needs_clarification',
-        understoodSoFar: `You want an end-to-end pipeline based on: "${prompt}"`,
-        clarifyingQuestions: [
-          'What is the approximate size of the dataset (e.g., MB/GB)?',
-          'What is the input format (e.g., CSV, Parquet)?',
-          'What output format do you need (e.g., CSV, database table)?'
-        ],
-        message: 'I can build the pipeline. I need a few details first.'
-      };
+    // If AI returned create_node for an explicit pipeline request, convert to pipeline
+    if (isExplicitPipelineRequest && parsed?.intent === 'create_node' && !pendingIntent && !graphHasFileMetadata) {
+      const questions: string[] = [];
+      if (!/\b(csv|parquet|json|xlsx)\b/.test(promptLower)) {
+        questions.push('What is the input format (e.g., CSV, Parquet)?');
+      }
+      if (!/\b\d+(\.\d+)?\s*(mb|gb|kb|tb)\b/.test(promptLower) && !/(large|small)\s+(file|dataset)/.test(promptLower)) {
+        questions.push('What is the approximate size of the dataset?');
+      }
+      
+      if (questions.length > 0) {
+        parsed = {
+          intent: 'generate_pipeline',
+          completeness: 'needs_clarification',
+          understoodSoFar: `You want a pipeline based on: "${prompt}"`,
+          clarifyingQuestions: questions,
+          message: 'I can build the pipeline. I need a few details first.'
+        };
+      }
     }
 
     if (
@@ -1199,6 +1184,44 @@ RESPOND WITH JSON ONLY.`;
         },
         estimatedPerformance: 'Vectorized operations with low overhead; parallelism handled by underlying libraries.'
       };
+    }
+
+    // Filter out file-related clarifying questions when we already have file metadata
+    if (graphHasFileMetadata && parsed?.clarifyingQuestions && Array.isArray(parsed.clarifyingQuestions)) {
+      const fileRelatedPatterns = [
+        /file\s*(size|format|type)/i,
+        /how\s*(large|big|many)/i,
+        /approximate(ly)?\s*(size|rows?|records?)/i,
+        /(csv|parquet|json|xlsx)\s*format/i,
+        /input\s*(format|type)/i,
+        /column\s*names?/i,
+        /data\s*(schema|structure|format)/i,
+        /\b(rows?|records?|entries|lines)\b.*\?/i
+      ];
+      
+      const filteredQuestions = parsed.clarifyingQuestions.filter((q: string) => {
+        const isFileRelated = fileRelatedPatterns.some(pattern => pattern.test(q));
+        if (isFileRelated) {
+          console.log('[Filtering] Removed file-related question (metadata exists):', q);
+        }
+        return !isFileRelated;
+      });
+
+      if (filteredQuestions.length !== parsed.clarifyingQuestions.length) {
+        parsed = {
+          ...parsed,
+          clarifyingQuestions: filteredQuestions
+        };
+        
+        // If no questions left, mark as ready to generate
+        if (filteredQuestions.length === 0 && parsed.completeness === 'needs_clarification') {
+          console.log('[Filtering] All questions were file-related, marking ready_to_generate');
+          parsed = {
+            ...parsed,
+            completeness: 'ready_to_generate'
+          };
+        }
+      }
     }
 
     console.log("Returning to client - intent:", parsed.intent, "message:", parsed.message?.substring(0, 100));
