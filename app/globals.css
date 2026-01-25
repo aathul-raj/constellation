@@ -315,11 +315,19 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1.35rem 1rem;
+  padding: 1.175rem 1rem;
   border-bottom: 1px solid var(--border-color);
 }
 
-.panel-header h2, .graph-panel-header h2 {
+.ai-assistant-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.34rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.panel-header h2, .graph-panel-header h2, .ai-assistant-panel-header h2 {
   font-size: 0.8125rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -669,6 +677,8 @@ body {
 
 .input-files-dropdown {
   margin-top: 0;
+  max-width: 40%;
+
 }
 
 .dropdown-label {
@@ -736,10 +746,10 @@ body {
 .dropdown-menu {
   position: absolute;
   top: 100%;
-  left: 0;
+  right: 0;
   min-width: 100%;
   width: max-content;
-  max-width: 500px;
+  max-width: 300px;
   margin-top: 0.25rem;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
@@ -1663,7 +1673,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem 1rem;
+  padding: 0.875rem 1.5rem;
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-color);
   position: relative;
@@ -1687,6 +1697,7 @@ body {
   white-space: nowrap;
   flex-shrink: 1;
   min-width: 0;
+  max-width: 60%
 }
 
 .csv-info h3 {

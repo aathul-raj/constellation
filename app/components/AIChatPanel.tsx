@@ -427,7 +427,7 @@ export default function AIChatPanel() {
 
   return (
     <div className="chat-panel">
-      <div className="panel-header">
+      <div className="ai-assistant-panel-header">
         <h2>AI Assistant</h2>
         <span className="status-indicator online">Online</span>
       </div>
