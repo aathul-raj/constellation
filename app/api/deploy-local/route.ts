@@ -85,7 +85,8 @@ async function executeTaskForFile(
   upstreamNodes: any[],
   deployDir: string,
   deploymentId: string,
-  nodeResults: Map<string, any>
+  nodeResults: Map<string, any>,
+  consoleLogs: Array<{type: string, message: string, nodeId?: string, nodeName?: string}>
 ) {
   try {
     const scriptPath = join(deployDir, `${nodeId}-task.py`);
@@ -120,14 +121,36 @@ async function executeTaskForFile(
     // Execute the Python script
     const fileName = specificFile ? specificFile.name : 'default';
     console.log(`[${deploymentId}] Running task for ${node.name} (file: ${fileName})...`);
+    consoleLogs.push({
+      type: 'info',
+      message: `Executing ${node.name}${specificFile ? ` (file: ${fileName})` : ''}...`,
+      nodeId: node.id,
+      nodeName: node.name
+    });
 
     const { stdout, stderr } = await execFileAsync(PYTHON_VERSION, [scriptPath], {
       env: env as NodeJS.ProcessEnv,
       maxBuffer: 10 * 1024 * 1024, // 10MB buffer
     });
 
-    if (stdout) console.log(`[${deploymentId}] [${node.name}:${fileIndex}] ${stdout}`);
-    if (stderr) console.log(`[${deploymentId}] [${node.name}:${fileIndex}] stderr: ${stderr}`);
+    if (stdout) {
+      console.log(`[${deploymentId}] [${node.name}:${fileIndex}] ${stdout}`);
+      consoleLogs.push({
+        type: 'info',
+        message: stdout.trim(),
+        nodeId: node.id,
+        nodeName: node.name
+      });
+    }
+    if (stderr) {
+      console.log(`[${deploymentId}] [${node.name}:${fileIndex}] stderr: ${stderr}`);
+      consoleLogs.push({
+        type: 'warning',
+        message: `stderr: ${stderr.trim()}`,
+        nodeId: node.id,
+        nodeName: node.name
+      });
+    }
 
     // Upload output to S3
     const s3OutputKey = `${nodeId}/file-${fileIndex}/output.csv`;
@@ -138,12 +161,24 @@ async function executeTaskForFile(
     const resultKey = `${nodeId}-${fileIndex}`;
     nodeResults.set(resultKey, { status: 'completed', fileIndex });
     console.log(`[${deploymentId}] ✓ Completed task for ${node.name} (file ${fileIndex})`);
+    consoleLogs.push({
+      type: 'success',
+      message: `Completed successfully`,
+      nodeId: node.id,
+      nodeName: node.name
+    });
 
     return { nodeId, fileIndex, status: 'completed' };
   } catch (error) {
     console.error(`[${deploymentId}] ✗ Failed to execute ${node.name} (file ${fileIndex}):`, error);
     const resultKey = `${nodeId}-${fileIndex}`;
     nodeResults.set(resultKey, { status: 'failed', error: String(error), fileIndex });
+    consoleLogs.push({
+      type: 'error',
+      message: `Failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      nodeId: node.id,
+      nodeName: node.name
+    });
     throw error;
   }
 }
@@ -176,9 +211,14 @@ export async function POST(request: NextRequest) {
     mkdirSync(deployDir, { recursive: true });
 
     const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n]));
+    const consoleLogs: Array<{type: string, message: string, nodeId?: string, nodeName?: string}> = [];
 
     // 1. Generate executable scripts for each compute node
     console.log(`[${deploymentId}] Generating scripts for ${computeNodes.length} compute nodes...`);
+    consoleLogs.push({
+      type: 'info',
+      message: `Generating scripts for ${computeNodes.length} compute nodes...`
+    });
 
     for (const node of computeNodes) {
       try {
@@ -186,8 +226,20 @@ export async function POST(request: NextRequest) {
         const scriptPath = join(deployDir, `${node.id}-task.py`);
         writeFileSync(scriptPath, script);
         console.log(`[${deploymentId}] ✓ Created script for ${node.name}`);
+        consoleLogs.push({
+          type: 'success',
+          message: `Created script for ${node.name}`,
+          nodeId: node.id,
+          nodeName: node.name
+        });
       } catch (error) {
         console.error(`[${deploymentId}] ✗ Failed to create script for ${node.name}:`, error);
+        consoleLogs.push({
+          type: 'error',
+          message: `Failed to create script for ${node.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          nodeId: node.id,
+          nodeName: node.name
+        });
         throw error;
       }
     }
@@ -274,12 +326,12 @@ export async function POST(request: NextRequest) {
 
         if (inputFileNode && inputFileNode.files && inputFileNode.files.length > 1) {
           // Fan out: create one execution per input file
-          return inputFileNode.files.map((file: any, fileIndex: number) => 
-            executeTaskForFile(node, nodeId, fileIndex, file, upstreamNodes, deployDir, deploymentId, nodeResults)
+          return inputFileNode.files.map((file: any, fileIndex: number) =>
+            executeTaskForFile(node, nodeId, fileIndex, file, upstreamNodes, deployDir, deploymentId, nodeResults, consoleLogs)
           );
         } else {
           // Single execution
-          return [executeTaskForFile(node, nodeId, 0, null, upstreamNodes, deployDir, deploymentId, nodeResults)];
+          return [executeTaskForFile(node, nodeId, 0, null, upstreamNodes, deployDir, deploymentId, nodeResults, consoleLogs)];
         }
       });
 
@@ -350,6 +402,7 @@ export async function POST(request: NextRequest) {
         })),
         outputFiles,
         outputNodeUpdates,
+        consoleLogs,
         tempDir: deployDir,
         timestamp: new Date().toISOString()
       },

@@ -95,9 +95,14 @@ export async function POST(request: NextRequest) {
     const deploymentId = crypto.randomUUID();
     const nodeScripts = new Map();
     const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n] as [string, any]));
+    const consoleLogs: Array<{type: string, message: string, nodeId?: string, nodeName?: string}> = [];
 
     // 0.5 Upload requirements.txt to S3
     console.log(`[${deploymentId}] Uploading dependencies...`);
+    consoleLogs.push({
+      type: 'info',
+      message: 'Uploading dependencies to S3...'
+    });
     const requirementsKey = `deployments/${deploymentId}/requirements.txt`;
     const requirementsContent = `pandas>=2.0.0
 numpy>=1.24.0
@@ -114,13 +119,25 @@ pyarrow>=12.0.0`;
         })
       );
       console.log(`[${deploymentId}] ✓ Uploaded requirements to s3://${BUCKET_NAME}/${requirementsKey}`);
+      consoleLogs.push({
+        type: 'success',
+        message: 'Dependencies uploaded successfully'
+      });
     } catch (error) {
       console.error(`[${deploymentId}] ✗ Failed to upload requirements:`, error);
+      consoleLogs.push({
+        type: 'error',
+        message: `Failed to upload requirements: ${error instanceof Error ? error.message : 'Unknown error'}`
+      });
       throw error;
     }
 
     // 1. Generate executable scripts for each compute node and upload to S3
     console.log(`[${deploymentId}] Generating scripts for ${computeNodes.length} compute nodes...`);
+    consoleLogs.push({
+      type: 'info',
+      message: `Generating scripts for ${computeNodes.length} compute nodes...`
+    });
 
     for (const node of computeNodes) {
       try {
@@ -139,8 +156,20 @@ pyarrow>=12.0.0`;
 
         nodeScripts.set(node.id, scriptKey);
         console.log(`[${deploymentId}] ✓ Uploaded script for ${node.name} to s3://${BUCKET_NAME}/${scriptKey}`);
+        consoleLogs.push({
+          type: 'success',
+          message: `Uploaded script for ${node.name}`,
+          nodeId: node.id,
+          nodeName: node.name
+        });
       } catch (error) {
         console.error(`[${deploymentId}] ✗ Failed to upload script for ${node.name}:`, error);
+        consoleLogs.push({
+          type: 'error',
+          message: `Failed to upload script for ${node.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          nodeId: node.id,
+          nodeName: node.name
+        });
         throw error;
       }
     }
@@ -282,28 +311,62 @@ except Exception as e:
           if (jobId) {
             jobIds.push({ nodeId, jobId });
             console.log(`[${deploymentId}] ✓ Submitted job for ${node.name}: ${jobId}`);
+            consoleLogs.push({
+              type: 'info',
+              message: `Submitted AWS Batch job: ${jobId.slice(0, 8)}...`,
+              nodeId: node.id,
+              nodeName: node.name
+            });
           }
         } catch (error) {
           console.error(`[${deploymentId}] ✗ Failed to submit job for ${node.name}:`, error);
+          consoleLogs.push({
+            type: 'error',
+            message: `Failed to submit job for ${node.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            nodeId: node.id,
+            nodeName: node.name
+          });
           throw error;
         }
       }
 
       // Wait for all jobs in this level to complete
       console.log(`[${deploymentId}] Waiting for ${jobIds.length} jobs to complete...`);
+      consoleLogs.push({
+        type: 'info',
+        message: `Waiting for ${jobIds.length} jobs to complete...`
+      });
 
       for (const { nodeId, jobId } of jobIds) {
         try {
           const status = await waitForJobCompletion(jobId);
           nodeResults.set(nodeId, { status });
+          const node = nodeMap.get(nodeId) as any;
           console.log(`[${deploymentId}] ✓ Job completed for node ${nodeId}`);
+          consoleLogs.push({
+            type: 'success',
+            message: `Job completed successfully`,
+            nodeId: node?.id,
+            nodeName: node?.name
+          });
         } catch (error) {
+          const node = nodeMap.get(nodeId) as any;
           console.error(`[${deploymentId}] ✗ Job failed for node ${nodeId}:`, error);
+          consoleLogs.push({
+            type: 'error',
+            message: `Job failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            nodeId: node?.id,
+            nodeName: node?.name
+          });
           throw error;
         }
       }
 
       console.log(`[${deploymentId}] Level ${levelIndex} completed`);
+      consoleLogs.push({
+        type: 'success',
+        message: `Execution level ${levelIndex + 1} completed`
+      });
     }
 
     // 4. Map compute node outputs to output-file nodes
@@ -345,6 +408,7 @@ except Exception as e:
           scriptKey
         })),
         outputNodeUpdates,
+        consoleLogs,
         timestamp: new Date().toISOString()
       },
       { status: 200 }
