@@ -47,24 +47,20 @@ export default function UploadPage() {
       } else {
         setFile(selectedFile);
         setError(null);
+        // Auto-upload the file
+        uploadFile(selectedFile);
       }
     }
   };
 
-  const handleUpload = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!file) {
-      setError('Please select a file');
-      return;
-    }
-
+  const uploadFile = async (fileToUpload: File) => {
     setLoading(true);
     setError(null);
     setSuccess(null);
 
     try {
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', fileToUpload);
 
       const response = await fetch('/api/upload', {
         method: 'POST',
@@ -74,7 +70,7 @@ export default function UploadPage() {
       const data = await response.json();
 
       if (response.ok) {
-        setSuccess(`File "${file.name}" uploaded successfully!`);
+        setSuccess(`File "${fileToUpload.name}" uploaded successfully!`);
         setFile(null);
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
@@ -90,6 +86,7 @@ export default function UploadPage() {
       setLoading(false);
     }
   };
+
 
   const handleDelete = async (fileKey: string) => {
     if (!confirm(`Delete "${fileKey}"?`)) {
@@ -144,31 +141,25 @@ export default function UploadPage() {
         {/* Upload Section */}
         <section className={styles.uploadSection}>
           <h2>Upload File</h2>
-          <form onSubmit={handleUpload}>
-            <div className={styles.fileInput}>
-              <input
-                ref={fileInputRef}
-                type="file"
-                onChange={handleFileSelect}
-                disabled={loading}
-                id="file-input"
-              />
-              <label htmlFor="file-input">
-                {file ? `Selected: ${file.name}` : 'Choose a file...'}
-              </label>
+          <div className={styles.fileInput}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={handleFileSelect}
+              disabled={loading}
+              id="file-input"
+            />
+            <label htmlFor="file-input">
+              {loading ? 'Uploading...' : 'Choose a file to upload...'}
+            </label>
+          </div>
+
+          {file && (
+            <div className={styles.fileInfo}>
+              <p>Name: {file.name}</p>
+              <p>Size: {formatFileSize(file.size)}</p>
             </div>
-
-            {file && (
-              <div className={styles.fileInfo}>
-                <p>Name: {file.name}</p>
-                <p>Size: {formatFileSize(file.size)}</p>
-              </div>
-            )}
-
-            <button type="submit" disabled={!file || loading} className={styles.uploadButton}>
-              {loading ? 'Uploading...' : 'Upload to S3'}
-            </button>
-          </form>
+          )}
         </section>
 
         {/* Messages */}

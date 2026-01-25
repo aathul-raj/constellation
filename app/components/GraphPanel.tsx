@@ -3,6 +3,7 @@
 import { useMemo, useCallback, useRef, useState, useEffect } from 'react';
 import { GraphCanvas, GraphNode, GraphEdge, GraphCanvasRef, darkTheme } from 'reagraph';
 import type { LayoutTypes } from 'reagraph';
+import { Info } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { transformToReagraph, getStatusColor } from '../utils/graph-transform';
 import { AddNodeModal } from './AddNodeModal';
@@ -10,8 +11,51 @@ import { ConnectionToolbar } from './ConnectionToolbar';
 import { DeleteEdgeToolbar } from './DeleteEdgeToolbar';
 import { ConfirmationModal } from './ConfirmationModal';
 
+// Animated node component for smooth hover effects
+const AnimatedNode = ({ size, color, opacity, active }: any) => {
+  const meshRef = useRef<any>(null);
+
+  useEffect(() => {
+    let animationFrameId: number;
+    // Scale up when active
+    const targetScale = active ? 1.1 : 1;
+
+    const animate = () => {
+      if (meshRef.current) {
+        const currentScale = meshRef.current.scale.x;
+        // Smooth lerp (0.1 = fast, 0.05 = slower)
+        const newScale = currentScale + (targetScale - currentScale) * 0.08;
+
+        if (Math.abs(targetScale - newScale) > 0.001) {
+          meshRef.current.scale.setScalar(newScale);
+          animationFrameId = requestAnimationFrame(animate);
+        } else {
+          meshRef.current.scale.setScalar(targetScale);
+        }
+      }
+    };
+
+    animate();
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
+  }, [active]);
+
+  return (
+    <group>
+      <mesh ref={meshRef}>
+        <sphereGeometry attach="geometry" args={[size, 32, 32]} />
+        <meshBasicMaterial attach="material" color={active ? '#ffffff' : color} opacity={opacity} transparent />
+      </mesh>
+    </group>
+  );
+};
+
+// Custom node renderer
+const renderCustomNode = (props: any) => <AnimatedNode {...props} />;
+
 export default function GraphPanel() {
-  const { graph, selectedNodeId, selectNode, setGraph } = useHPCStore();
+  const { graph, selectedNodeId, selectNode, setGraph, theme } = useHPCStore();
   const graphRef = useRef<GraphCanvasRef>(null);
   const [layoutType, setLayoutType] = useState<LayoutTypes>('forceDirected2d');
   const [is3D, setIs3D] = useState(false);
@@ -36,10 +80,10 @@ export default function GraphPanel() {
     nodes.map((node) => ({
       id: node.id,
       label: node.label,
-      fill: getStatusColor(node.data?.status || 'queued'),
+      fill: getStatusColor(node.data?.status || 'queued', is3D, theme === 'dark'),
       data: node.data
     })),
-    [nodes]
+    [nodes, is3D, theme]
   );
 
   const graphEdges: GraphEdge[] = useMemo(() =>
@@ -138,7 +182,7 @@ export default function GraphPanel() {
       // Normal mode: select node
       selectNode(selectedNodeId === node.id ? null : node.id);
     }
-  }, [isConnectionMode, connectionSource, connectionTarget, selectNode, selectedNodeId, graph.nodes, canConnect, isDeleteMode]);
+  }, [isConnectionMode, connectionSource, connectionTarget, selectNode, selectedNodeId, graph.nodes, canConnect, isDeleteMode, graph]);
 
   const handleAddConnection = () => {
     if (!connectionSource || !connectionTarget) return;
@@ -349,15 +393,15 @@ export default function GraphPanel() {
     ring: {
       ...darkTheme.ring,
       fill: 'rgba(0, 0, 0, 0)',
-      activeFill: 'rgba(0, 0, 0, 0)', // No ring on selection
+      activeFill: 'rgba(0, 0, 0, 0)',
     },
     edge: {
       ...darkTheme.edge,
       fill: '#3b82f6',
-      activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa', // No hover in connection mode
+      activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa',
       opacity: 0.8,
       selectedOpacity: 1,
-      inactiveOpacity: 0.15,
+      inactiveOpacity: 0.35,
       size: 6,
       strokeWidth: 6,
     },
@@ -365,7 +409,7 @@ export default function GraphPanel() {
       ...darkTheme.arrow,
       fill: '#3b82f6',
       activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa',
-      opacity: 0.15,
+      opacity: 0.35,
       selectedOpacity: 1,
     },
     node: {
@@ -374,7 +418,7 @@ export default function GraphPanel() {
       activeFill: '#3b82f6',
       opacity: 0.9,
       selectedOpacity: 1,
-      inactiveOpacity: 0.9,
+      inactiveOpacity: 0.35,
       label: {
         ...darkTheme.node.label,
         color: '#475569',
@@ -402,15 +446,6 @@ export default function GraphPanel() {
     }
     return selectedNodeId ? [selectedNodeId] : [];
   }, [isConnectionMode, connectionSource, connectionTarget, selectedNodeId, isDeleteMode, selectedEdge]);
-
-  const renderCustomNode = useCallback(({ size, color, opacity, active }: any) => (
-    <group>
-      <mesh>
-        <sphereGeometry attach="geometry" args={[size, 32, 32]} />
-        <meshStandardMaterial attach="material" color={active ? '#ffffff' : color} opacity={opacity} transparent />
-      </mesh>
-    </group>
-  ), []);
 
   return (
     <div className="graph-panel">
@@ -497,6 +532,7 @@ export default function GraphPanel() {
           labelType="all"
           theme={customTheme}
           cameraMode={is3D ? 'rotate' : 'pan'}
+          renderNode={renderCustomNode}
         >
           {is3D && (
             <>
@@ -507,6 +543,20 @@ export default function GraphPanel() {
             </>
           )}
         </GraphCanvas>
+
+        {isConnectionMode && !connectionSource && (
+          <div className="mode-overlay">
+            <Info size={16} className="text-blue-400" />
+            <span>Select source and target nodes to connect. Output nodes cannot be sources.</span>
+          </div>
+        )}
+
+        {isDeleteMode && !selectedEdge && (
+          <div className="mode-overlay">
+            <Info size={16} className="text-red-400" />
+            <span>Select an edge or node to delete</span>
+          </div>
+        )}
 
         <ConnectionToolbar
           sourceNode={connectionSource}
