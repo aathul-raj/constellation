@@ -2,7 +2,7 @@
 
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp } from 'lucide-react';
+import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp, FileText, X } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
 import { generateFunctionSignature } from '../utils/signature-generator';
@@ -31,7 +31,8 @@ export default function EditorPanel() {
     updateNodeName,
     updateNodeCode,
     updateNodeStatus,
-    updateNodeFile,
+    addNodeFile,
+    removeNodeFile,
     updateNodeCsvData,
     clearNodeCsvData,
     markCsvAsUploaded,
@@ -50,6 +51,7 @@ export default function EditorPanel() {
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(250); // Default ~1/3 of typical screen
   const [isResizing, setIsResizing] = useState(false);
+  const [selectedOutputFileIndex, setSelectedOutputFileIndex] = useState(0);
   const consoleRef = useRef<HTMLDivElement>(null);
 
   const selectedNode = useMemo(() => {
@@ -98,7 +100,7 @@ export default function EditorPanel() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const handleRun = useCallback(async () => {
+  const runDeployment = useCallback(async (endpoint: string, title: string) => {
     if (isRunning) return;
 
     setIsRunning(true);
@@ -106,54 +108,94 @@ export default function EditorPanel() {
     resetAllStatuses();
 
     try {
-      // Deploy to backend
-      const response = await fetch('/api/deploy-batch', {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ graph })
       });
 
-      const deployResult: DeploymentResult = await response.json();
+      const deployResult = await response.json();
 
       if (!response.ok) {
         addNotification({
           type: 'error',
           title: 'Deployment Failed',
-          message: 'Failed to deploy pipeline'
+          message: deployResult.message || 'Failed to deploy pipeline'
         });
         setIsRunning(false);
         return;
       }
 
-      // Update node statuses based on deployment result
-      const levels = getExecutionLevels(graph);
-      const totalNodes = graph.nodes.length;
-      let completedNodes = 0;
+      // Verify deployment completed successfully
+      if (deployResult.status !== 'completed') {
+        addNotification({
+          type: 'error',
+          title: 'Deployment Error',
+          message: deployResult.message || 'Deployment failed to complete'
+        });
+        setIsRunning(false);
+        return;
+      }
 
-      for (const level of levels) {
-        // Set all nodes in this level to running
-        for (const nodeId of level) {
-          updateNodeStatus(nodeId, 'running');
+      // Update node statuses from the deployment result
+      const computeNodes = deployResult.nodes || [];
+      const computeNodeCount = graph.nodes.filter(n => n.type === 'compute').length;
+
+      computeNodes.forEach((nodeResult: any, index: number) => {
+        // Use nodeId if available (parallel execution), otherwise use id
+        const actualNodeId = nodeResult.nodeId || nodeResult.id;
+        updateNodeStatus(actualNodeId, nodeResult.status);
+        setRunProgress(((index + 1) / computeNodeCount) * 100);
+      });
+
+      // Handle output file updates for output-file nodes
+      const outputNodeUpdates = deployResult.outputNodeUpdates || [];
+
+      // Group updates by nodeId to handle multiple files per node
+      const updatesByNode = new Map<string, typeof outputNodeUpdates>();
+      for (const update of outputNodeUpdates) {
+        if (!updatesByNode.has(update.nodeId)) {
+          updatesByNode.set(update.nodeId, []);
         }
+        updatesByNode.get(update.nodeId)!.push(update);
+      }
 
-        // Simulate execution time (500ms per level)
-        await sleep(500);
-
-        // Complete all nodes in this level
-        for (const nodeId of level) {
-          const nodeResult = deployResult.nodes.find(n => n.id === nodeId);
-          if (nodeResult?.outputFileId) {
-            updateNodeFile(nodeId, nodeResult.outputFileId);
+      // Process each output node
+      for (const [nodeId, updates] of updatesByNode) {
+        if (updates[0].s3Key) {
+          // AWS deployment - add S3 file references
+          for (const update of updates) {
+            addNodeFile(nodeId, {
+              id: update.s3Key,
+              name: update.fileName || `output-${Date.now()}.csv`
+            });
           }
-          updateNodeStatus(nodeId, 'completed');
-          completedNodes++;
-          setRunProgress((completedNodes / totalNodes) * 100);
+        } else if (updates[0].csvContent) {
+          // Local deployment - store all CSV files in a special property
+          // For now, just show the first file's content in the viewer
+          updateNodeCsvData(nodeId, updates[0].csvContent, updates[0].fileName || 'output.csv');
+          
+          // Store all output files for zip download
+          if (updates.length > 1) {
+            // Store reference to all files in the node (we'll add this to the store)
+            (window as any).__outputFiles = (window as any).__outputFiles || {};
+            (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
+              fileName: u.fileName,
+              content: u.csvContent
+            }));
+            
+            addNotification({
+              type: 'info',
+              title: 'Multiple Output Files',
+              message: `Generated ${updates.length} output files. Click "Download All" to get a zip file.`
+            });
+          }
         }
       }
 
       addNotification({
         type: 'success',
-        title: 'Pipeline Executed',
+        title: title,
         message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
       });
     } catch (error) {
@@ -165,7 +207,15 @@ export default function EditorPanel() {
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, updateNodeFile, addNotification]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification]);
+
+  const handleRun = useCallback(async () => {
+    await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
+  }, [runDeployment]);
+
+  const handleRunLocal = useCallback(async () => {
+    await runDeployment('/api/deploy-local', 'Pipeline Executed (Local)');
+  }, [runDeployment]);
 
   const handleReset = useCallback(() => {
     resetAllStatuses();
@@ -178,88 +228,24 @@ export default function EditorPanel() {
   }, [resetAllStatuses, setRunProgress, addNotification]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!selectedNodeId || !e.target.files?.[0]) return;
+    if (!selectedNodeId || !e.target.files) return;
 
-    const file = e.target.files[0];
+    const files = Array.from(e.target.files);
+    setUploadingNodeId(selectedNodeId);
 
     try {
-      // For CSV files, load them locally and upload to AWS automatically
-      if (file.name.endsWith('.csv') || file.type === 'text/csv') {
-        const storageKey = `csv-edit-${selectedNodeId}`;
-
-        // Check if there's a saved version in localStorage
-        const savedData = localStorage.getItem(storageKey);
-        const fileContent = savedData || await file.text();
-
-        updateNodeCsvData(selectedNodeId, fileContent, file.name);
-
-        // Automatically upload to AWS
-        setUploadingNodeId(selectedNodeId);
-
-        const blob = new Blob([fileContent], { type: 'text/csv' });
-        const uploadFormData = new FormData();
-        uploadFormData.append('file', blob, file.name);
-
-        const uploadResponse = await fetch('/api/upload', {
-          method: 'POST',
-          body: uploadFormData
-        });
-
-        const uploadData = await uploadResponse.json();
-
-        if (uploadResponse.ok) {
-          // Analyze the file
-          const analyzeFormData = new FormData();
-          analyzeFormData.append('file', blob, file.name);
-
-          const analyzeResponse = await fetch('/api/analyze-file', {
-            method: 'POST',
-            body: analyzeFormData
-          });
-
-          const metadata = await analyzeResponse.json();
-
-          updateNodeFile(selectedNodeId, uploadData.key, metadata);
-
-          // Mark CSV as uploaded
-          markCsvAsUploaded(selectedNodeId);
-
-          if (savedData) {
-            addNotification({
-              type: 'success',
-              title: 'File Restored & Uploaded',
-              message: `${file.name} restored with your previous edits and uploaded to AWS.`
-            });
-          } else {
-            addNotification({
-              type: 'success',
-              title: 'File Uploaded',
-              message: `${file.name} uploaded to AWS successfully.`
-            });
-          }
-        } else {
+      for (const file of files) {
+        // Only accept CSV and ZIP files
+        if (!file.name.endsWith('.csv') && !file.name.endsWith('.zip')) {
           addNotification({
             type: 'error',
-            title: 'Upload Failed',
-            message: uploadData.error
+            title: 'Invalid File Type',
+            message: `${file.name} - Only CSV and ZIP files are supported`
           });
+          continue;
         }
 
-        setUploadingNodeId(null);
-      } else {
-        // For non-CSV files, upload directly
-        setUploadingNodeId(selectedNodeId);
-
-        const analyzeFormData = new FormData();
-        analyzeFormData.append('file', file);
-
-        const analyzeResponse = await fetch('/api/analyze-file', {
-          method: 'POST',
-          body: analyzeFormData
-        });
-
-        const metadata = await analyzeResponse.json();
-
+        // Upload to AWS
         const uploadFormData = new FormData();
         uploadFormData.append('file', file);
 
@@ -271,17 +257,70 @@ export default function EditorPanel() {
         const uploadData = await uploadResponse.json();
 
         if (uploadResponse.ok) {
-          updateNodeFile(selectedNodeId, uploadData.key, metadata);
-          addNotification({
-            type: 'success',
-            title: 'File Uploaded',
-            message: `${file.name} uploaded successfully`
-          });
+          // Check if this is a ZIP file response (multiple files) or single file
+          if (uploadData.files && Array.isArray(uploadData.files)) {
+            // ZIP file - multiple CSVs extracted
+            for (const uploadedFile of uploadData.files) {
+              // Analyze each CSV
+              const analyzeFormData = new FormData();
+
+              // Fetch the file from S3 to analyze it
+              const fileResponse = await fetch(`/api/files/${encodeURIComponent(uploadedFile.key)}`);
+              const fileBlob = await fileResponse.blob();
+              const csvFile = new File([fileBlob], uploadedFile.originalName, { type: 'text/csv' });
+
+              analyzeFormData.append('file', csvFile);
+
+              const analyzeResponse = await fetch('/api/analyze-file', {
+                method: 'POST',
+                body: analyzeFormData
+              });
+
+              const metadata = await analyzeResponse.json();
+
+              // Add file to the node's files array
+              addNodeFile(selectedNodeId, {
+                id: uploadedFile.key,
+                name: uploadedFile.originalName,
+                metadata: metadata
+              });
+            }
+
+            addNotification({
+              type: 'success',
+              title: 'ZIP Extracted',
+              message: `${uploadData.count} CSV file(s) uploaded from ${file.name}`
+            });
+          } else {
+            // Single CSV file
+            const analyzeFormData = new FormData();
+            analyzeFormData.append('file', file);
+
+            const analyzeResponse = await fetch('/api/analyze-file', {
+              method: 'POST',
+              body: analyzeFormData
+            });
+
+            const metadata = await analyzeResponse.json();
+
+            // Add file to the node's files array
+            addNodeFile(selectedNodeId, {
+              id: uploadData.key,
+              name: file.name,
+              metadata: metadata
+            });
+
+            addNotification({
+              type: 'success',
+              title: 'File Uploaded',
+              message: `${file.name} uploaded to AWS successfully`
+            });
+          }
         } else {
           addNotification({
             type: 'error',
             title: 'Upload Failed',
-            message: uploadData.error
+            message: uploadData.error || 'Failed to upload file'
           });
         }
       }
@@ -295,15 +334,17 @@ export default function EditorPanel() {
       setUploadingNodeId(null);
       e.target.value = '';
     }
-  }, [selectedNodeId, updateNodeCsvData, updateNodeFile, addNotification]);
+  }, [selectedNodeId, addNodeFile, addNotification]);
 
   const handleFileDownload = useCallback(() => {
-    if (!selectedNode?.fileId) return;
+    if (!selectedNode?.files || selectedNode.files.length === 0) return;
 
-    const url = `/api/files/${encodeURIComponent(selectedNode.fileId)}?download=true`;
+    // Download the first file
+    const file = selectedNode.files[0];
+    const url = `/api/files/${encodeURIComponent(file.id)}?download=true`;
     const link = document.createElement('a');
     link.href = url;
-    link.download = selectedNode.fileId;
+    link.download = file.name;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -321,6 +362,49 @@ export default function EditorPanel() {
     document.body.removeChild(link);
     URL.revokeObjectURL(link.href);
   }, [selectedNode]);
+
+  const handleDownloadAllAsZip = useCallback(async () => {
+    if (!selectedNode) return;
+
+    // Get all output files for this node
+    const outputFiles = (window as any).__outputFiles?.[selectedNode.id];
+    if (!outputFiles || outputFiles.length === 0) return;
+
+    try {
+      // Dynamically import JSZip
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+
+      // Add all files to the zip
+      outputFiles.forEach((file: any) => {
+        zip.file(file.fileName, file.content);
+      });
+
+      // Generate the zip file
+      const blob = await zip.generateAsync({ type: 'blob' });
+
+      // Download the zip
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `${selectedNode.name}-outputs.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+
+      addNotification({
+        type: 'success',
+        title: 'Download Complete',
+        message: `Downloaded ${outputFiles.length} files as ${selectedNode.name}-outputs.zip`
+      });
+    } catch (error) {
+      addNotification({
+        type: 'error',
+        title: 'Download Failed',
+        message: error instanceof Error ? error.message : 'Failed to create zip file'
+      });
+    }
+  }, [selectedNode, addNotification]);
 
   const handleSaveName = useCallback(() => {
     if (selectedNodeId && nameInput.trim()) {
@@ -423,36 +507,92 @@ export default function EditorPanel() {
                 </span>
               </div>
               {selectedNode.type === 'input-file' && (
-                <div className="file-actions">
-                  {!selectedNode.csvData && (
+                <>
+                  <div className="file-upload-section">
                     <label className="file-upload-btn">
                       <Upload size={14} />
-                      <span>Upload File</span>
+                      <span>Upload Files</span>
                       <input
                         type="file"
+                        accept=".csv,.zip"
+                        multiple
                         onChange={handleFileUpload}
                         disabled={uploadingNodeId === selectedNodeId}
                         style={{ display: 'none' }}
                       />
                     </label>
+                    <span className="file-upload-hint">CSV or ZIP files</span>
+                  </div>
+                  {selectedNode.files && selectedNode.files.length > 0 && (
+                    <div className="uploaded-files-list">
+                      <div className="files-header">
+                        <span>Uploaded Files ({selectedNode.files.length})</span>
+                      </div>
+                      {selectedNode.files.map((file) => (
+                        <div key={file.id} className="file-item">
+                          <div className="file-item-info">
+                            <FileText size={14} />
+                            <span className="file-name">{file.name}</span>
+                            {file.metadata?.rowCount && (
+                              <span className="file-meta">{file.metadata.rowCount} rows</span>
+                            )}
+                          </div>
+                          <button
+                            className="file-remove-btn"
+                            onClick={() => removeNodeFile(selectedNode.id, file.id)}
+                            title="Remove file"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   )}
-                  {selectedNode.fileId && (
-                    <span className="file-indicator">{selectedNode.fileId}</span>
-                  )}
-                </div>
+                </>
               )}
               {selectedNode.type === 'output-file' && (
                 <div className="file-actions">
-                  {selectedNode.fileId ? (
+                  {selectedNode.csvData || (selectedNode.files && selectedNode.files.length > 0) ? (
                     <>
-                      <button
-                        className="file-download-btn"
-                        onClick={handleFileDownload}
-                      >
-                        <Download size={14} />
-                        <span>Download</span>
-                      </button>
-                      <span className="file-indicator">{selectedNode.fileId}</span>
+                      {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
+                        <button
+                          className="file-download-btn"
+                          onClick={handleDownloadAllAsZip}
+                          style={{ background: 'var(--accent-primary)', color: 'white' }}
+                        >
+                          <Download size={14} />
+                          <span>Download All ({(window as any).__outputFiles[selectedNode.id].length} files)</span>
+                        </button>
+                      ) : selectedNode.csvData ? (
+                        <button
+                          className="file-download-btn"
+                          onClick={handleDownloadCSV}
+                        >
+                          <Download size={14} />
+                          <span>Download CSV</span>
+                        </button>
+                      ) : null}
+                      {selectedNode.files && selectedNode.files.length > 0 && (
+                        <>
+                          <button
+                            className="file-download-btn"
+                            onClick={handleFileDownload}
+                          >
+                            <Download size={14} />
+                            <span>Download from S3</span>
+                          </button>
+                          <div className="uploaded-files-list">
+                            {selectedNode.files.map((file) => (
+                              <div key={file.id} className="file-item">
+                                <div className="file-item-info">
+                                  <FileText size={14} />
+                                  <span className="file-name">{file.name}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </>
                   ) : (
                     <span className="file-placeholder">No output file yet</span>
@@ -465,7 +605,9 @@ export default function EditorPanel() {
                 {/* Show input data schema */}
                 {(() => {
                   const inputNodes = graph.nodes.filter(n => selectedNode.in.includes(n.id));
-                  const inputsWithMetadata = inputNodes.filter(n => n.fileMetadata);
+                  const inputsWithMetadata = inputNodes.filter(n =>
+                    n.files && n.files.length > 0 && n.files[0].metadata
+                  );
 
                   if (inputsWithMetadata.length > 0) {
                     return (
@@ -474,20 +616,23 @@ export default function EditorPanel() {
                           <HardDrive size={14} />
                           <span>Input Data</span>
                         </div>
-                        {inputsWithMetadata.map((node, idx) => (
-                          <div key={node.id} className="schema-item">
-                            <strong>{node.name}:</strong>
-                            {node.fileMetadata?.columns && (
-                              <span className="schema-columns">
-                                {node.fileMetadata.columns.slice(0, 5).join(', ')}
-                                {node.fileMetadata.columns.length > 5 && ` +${node.fileMetadata.columns.length - 5} more`}
-                              </span>
-                            )}
-                            {node.fileMetadata?.rowCount && (
-                              <span className="schema-meta">({node.fileMetadata.rowCount} rows)</span>
-                            )}
-                          </div>
-                        ))}
+                        {inputsWithMetadata.map((node) => {
+                          const metadata = node.files?.[0]?.metadata;
+                          return (
+                            <div key={node.id} className="schema-item">
+                              <strong>{node.name}:</strong>
+                              {metadata?.columns && (
+                                <span className="schema-columns">
+                                  {metadata.columns.slice(0, 5).join(', ')}
+                                  {metadata.columns.length > 5 && ` +${metadata.columns.length - 5} more`}
+                                </span>
+                              )}
+                              {metadata?.rowCount && (
+                                <span className="schema-meta">({metadata.rowCount} rows)</span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     );
                   }
@@ -546,11 +691,52 @@ export default function EditorPanel() {
               />
             )}
             {selectedNode.type === 'output-file' && selectedNode.csvData && (
-              <CSVViewer
-                data={selectedNode.csvData}
-                fileName={selectedNode.fileName || 'Output'}
-                onDownload={handleDownloadCSV}
-              />
+              <>
+                {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
+                  <div className="multi-file-viewer">
+                    <div className="file-list-panel">
+                      <div className="file-list-header">
+                        <span>Output Files ({(window as any).__outputFiles[selectedNode.id].length})</span>
+                      </div>
+                      <div className="file-list">
+                        {(window as any).__outputFiles[selectedNode.id].map((file: any, index: number) => (
+                          <div
+                            key={index}
+                            className={`file-list-item ${selectedOutputFileIndex === index ? 'active' : ''}`}
+                            onClick={() => setSelectedOutputFileIndex(index)}
+                          >
+                            <FileText size={14} />
+                            <span className="file-list-name">{file.fileName}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="file-viewer-panel">
+                      <CSVViewer
+                        data={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].content}
+                        fileName={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].fileName}
+                        onDownload={() => {
+                          const file = (window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex];
+                          const link = document.createElement('a');
+                          const blob = new Blob([file.content], { type: 'text/csv' });
+                          link.href = URL.createObjectURL(blob);
+                          link.download = file.fileName;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          URL.revokeObjectURL(link.href);
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <CSVViewer
+                    data={selectedNode.csvData}
+                    fileName={selectedNode.fileName || 'Output'}
+                    onDownload={handleDownloadCSV}
+                  />
+                )}
+              </>
             )}
             {selectedNode.type !== 'compute' && !selectedNode.csvData && (
               <div className="empty-state">
@@ -618,12 +804,22 @@ export default function EditorPanel() {
             Reset
           </button>
           <button
+            className={`btn btn-secondary ${isRunning ? 'running' : ''}`}
+            onClick={handleRunLocal}
+            disabled={isRunning}
+            title="Run locally on this machine (requires Python 3)"
+          >
+            <Play size={16} />
+            {isRunning ? 'Running...' : 'Run Locally'}
+          </button>
+          <button
             className={`btn btn-primary ${isRunning ? 'running' : ''}`}
             onClick={handleRun}
             disabled={isRunning}
+            title="Run on AWS Batch"
           >
             <Play size={16} />
-            {isRunning ? 'Running...' : 'Run'}
+            {isRunning ? 'Running...' : 'Run on AWS'}
           </button>
         </div>
       </div>

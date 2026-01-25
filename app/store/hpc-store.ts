@@ -14,6 +14,12 @@ export interface FileMetadata {
   schema?: Record<string, string>;
 }
 
+export interface UploadedFile {
+  id: string; // S3 file ID
+  name: string; // Original file name
+  metadata?: FileMetadata; // Analysis of uploaded file
+}
+
 export interface HPCNode {
   id: string;
   name: string;
@@ -22,8 +28,7 @@ export interface HPCNode {
   code: string;
   in: string[];
   out: string[];
-  fileId?: string; // S3 file ID for input/output file nodes
-  fileMetadata?: FileMetadata; // Analysis of uploaded file
+  files?: UploadedFile[]; // Multiple uploaded files (for input-file nodes)
   csvData?: string; // Local CSV data for editing before upload
   fileName?: string; // Original file name
   lastUploadedCsvData?: string; // CSV data that was last uploaded to AWS
@@ -73,16 +78,21 @@ interface HPCStore {
   updateNodeName: (nodeId: string, name: string) => void;
   updateNodeCode: (nodeId: string, code: string) => void;
   updateNodeStatus: (nodeId: string, status: NodeStatus) => void;
-  updateNodeFile: (nodeId: string, fileId: string, metadata?: FileMetadata) => void;
+  addNodeFile: (nodeId: string, file: UploadedFile) => void;
+  removeNodeFile: (nodeId: string, fileId: string) => void;
   updateNodeCsvData: (nodeId: string, csvData: string, fileName?: string) => void;
   clearNodeCsvData: (nodeId: string) => void;
   markCsvAsUploaded: (nodeId: string) => void;
   updateNodeParallelization: (nodeId: string, parallelization: HPCNode['parallelization']) => void;
+  createNode: (nodeType: 'input-file' | 'compute' | 'output-file', nodeName: string, parentNodeId?: string, pythonCode?: string) => string;
+  connectNodes: (sourceId: string, targetId: string) => void;
+  disconnectNodes: (sourceId: string, targetId: string) => void;
   resetAllStatuses: () => void;
   setIsRunning: (running: boolean) => void;
   setRunProgress: (progress: number) => void;
   toggleTheme: () => void;
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
+  setChatMessages: (messages: ChatMessage[]) => void;
   addNotification: (notification: Omit<Notification, 'id' | 'timestamp'>) => void;
   removeNotification: (id: string) => void;
   clearStore: () => void;
@@ -90,7 +100,7 @@ interface HPCStore {
   setSaveStatus: (status: 'idle' | 'saving' | 'saved' | 'error') => void;
 }
 
-const initialGraph: HPCGraph = {
+export const initialGraph: HPCGraph = {
   name: "Data Processing Pipeline",
   description: "Simple data processing workflow with input file, compute task, and output file",
   nodes: [
@@ -108,15 +118,17 @@ const initialGraph: HPCGraph = {
       name: "Process Data",
       type: "compute",
       status: "queued",
-      code: `def task(input_data):  # do not edit this method header
+      code: `def task(in_df):
     import numpy as np
     import pandas as pd
 
     # Your code here
-    pass
+    out_df = in_df.copy()
+    
+    # Example transformation
+    # out_df['processed'] = True
 
-    # return the output df
-    return input_data`,
+    return out_df`,
       in: ["550e8400-e29b-41d4-a716-446655440000"],
       out: ["550e8400-e29b-41d4-a716-446655440002"]
     },
@@ -184,11 +196,26 @@ export const useHPCStore = create<HPCStore>()(
     }
   })),
 
-  updateNodeFile: (nodeId, fileId, metadata) => set((state) => ({
+  addNodeFile: (nodeId, file) => set((state) => ({
     graph: {
       ...state.graph,
       nodes: state.graph.nodes.map((node) =>
-        node.id === nodeId ? { ...node, fileId, fileMetadata: metadata } : node
+        node.id === nodeId ? {
+          ...node,
+          files: [...(node.files || []), file]
+        } : node
+      )
+    }
+  })),
+
+  removeNodeFile: (nodeId, fileId) => set((state) => ({
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === nodeId ? {
+          ...node,
+          files: (node.files || []).filter(f => f.id !== fileId)
+        } : node
       )
     }
   })),
@@ -229,6 +256,90 @@ export const useHPCStore = create<HPCStore>()(
     }
   })),
 
+  createNode: (nodeType, nodeName, parentNodeId, pythonCode) => {
+    const newNodeId = `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    const newNode: HPCNode = {
+      id: newNodeId,
+      name: nodeName,
+      type: nodeType,
+      status: 'queued',
+      code: pythonCode || (nodeType === 'compute'
+        ? `def task(in_df):\n    import numpy as np\n    import pandas as pd\n\n    # Your code here\n    # Example: out_df = in_df.copy()\n    \n    return in_df`
+        : ''
+      ),
+      in: parentNodeId ? [parentNodeId] : [],
+      out: []
+    };
+
+    set((state) => {
+      const updatedNodes = [...state.graph.nodes];
+
+      // Add the new node
+      updatedNodes.push(newNode);
+
+      // Update parent node's out array if parent exists
+      if (parentNodeId) {
+        updatedNodes.forEach((node) => {
+          if (node.id === parentNodeId && !node.out.includes(newNodeId)) {
+            node.out.push(newNodeId);
+          }
+        });
+      }
+
+      return {
+        graph: {
+          ...state.graph,
+          nodes: updatedNodes
+        }
+      };
+    });
+
+    return newNodeId;
+  },
+
+  connectNodes: (sourceId, targetId) => set((state) => {
+    const nodes = state.graph.nodes;
+    const sourceExists = nodes.some(n => n.id === sourceId);
+    const targetExists = nodes.some(n => n.id === targetId);
+
+    if (!sourceExists || !targetExists) return {};
+
+    const updatedNodes = nodes.map(node => {
+      if (node.id === sourceId) {
+        if (!node.out.includes(targetId)) {
+          return { ...node, out: [...node.out, targetId] };
+        }
+      }
+      if (node.id === targetId) {
+        if (!node.in.includes(sourceId)) {
+          return { ...node, in: [...node.in, sourceId] };
+        }
+      }
+      return node;
+    });
+
+    return {
+      graph: { ...state.graph, nodes: updatedNodes }
+    };
+  }),
+
+  disconnectNodes: (sourceId, targetId) => set((state) => {
+    const updatedNodes = state.graph.nodes.map(node => {
+      if (node.id === sourceId) {
+        return { ...node, out: node.out.filter(id => id !== targetId) };
+      }
+      if (node.id === targetId) {
+        return { ...node, in: node.in.filter(id => id !== sourceId) };
+      }
+      return node;
+    });
+
+    return {
+      graph: { ...state.graph, nodes: updatedNodes }
+    };
+  }),
+
   resetAllStatuses: () => set((state) => ({
     graph: {
       ...state.graph,
@@ -254,6 +365,10 @@ export const useHPCStore = create<HPCStore>()(
       }
     ]
   })),
+
+  setChatMessages: (messages) => set({
+    chatMessages: messages
+  }),
 
   addNotification: (notification) => set((state) => ({
     notifications: [

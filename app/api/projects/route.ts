@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { name, graph } = body as { name: string; graph: HPCGraph };
+    const { name, graph, chatMessages } = body as { name: string; graph: HPCGraph; chatMessages?: any[] };
 
     if (!name || !graph) {
       return NextResponse.json({ error: 'Name and graph are required' }, { status: 400 });
@@ -52,6 +52,7 @@ export async function POST(req: NextRequest) {
     const projectData = {
       name,
       graph,
+      chatMessages: chatMessages || [],
       userEmail: session.user.email,
       createdAt: Date.now(),
       updatedAt: Date.now(),

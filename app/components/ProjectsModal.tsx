@@ -1,14 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Plus, Save, Trash2, FolderOpen } from 'lucide-react';
-import { useHPCStore } from '../store/hpc-store';
+import { X, Plus, Trash2, FolderOpen } from 'lucide-react';
+import { useHPCStore, initialGraph } from '../store/hpc-store';
 import styles from './ProjectsModal.module.css';
 
 interface Project {
   id: string;
   name: string;
   graph: any;
+  chatMessages?: any[];
   updatedAt: number;
   createdAt: number;
 }
@@ -18,11 +19,10 @@ interface ProjectsModalProps {
 }
 
 export default function ProjectsModal({ onClose }: ProjectsModalProps) {
-  const { graph, setGraph, addNotification, currentProjectId, currentProjectName, setCurrentProject } = useHPCStore();
+  const { setGraph, setChatMessages, addNotification, currentProjectId, setCurrentProject } = useHPCStore();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [projectName, setProjectName] = useState(currentProjectName || graph.name);
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -44,95 +44,71 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
     }
   };
 
-  const handleSaveNew = async () => {
-    if (!projectName.trim()) {
-      addNotification({
-        type: 'error',
-        title: 'Invalid Name',
-        message: 'Please enter a project name',
-      });
+  const handleCreateNew = async () => {
+    const projectName = prompt('Enter a name for the new project:');
+
+    if (!projectName?.trim()) {
       return;
     }
 
-    setSaving(true);
+    setCreating(true);
     try {
       const response = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: projectName,
-          graph,
+          name: projectName.trim(),
+          graph: initialGraph,
+          chatMessages: [],
         }),
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        setCurrentProject(data.id, projectName);
+        // Load the new project
+        setGraph(initialGraph);
+        setChatMessages([]);
+        setCurrentProject(data.id, projectName.trim());
+
         addNotification({
           type: 'success',
-          title: 'Project Saved',
-          message: `${projectName} saved successfully`,
+          title: 'Project Created',
+          message: `${projectName} created successfully`,
         });
+
         await loadProjects();
+        onClose();
       } else {
         throw new Error(data.error);
       }
     } catch (error) {
       addNotification({
         type: 'error',
-        title: 'Save Failed',
-        message: error instanceof Error ? error.message : 'Failed to save project',
+        title: 'Create Failed',
+        message: error instanceof Error ? error.message : 'Failed to create project',
       });
     } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleUpdate = async () => {
-    if (!currentProjectId) {
-      handleSaveNew();
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const response = await fetch(`/api/projects/${currentProjectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: projectName,
-          graph,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        addNotification({
-          type: 'success',
-          title: 'Project Updated',
-          message: `${projectName} updated successfully`,
-        });
-        await loadProjects();
-      } else {
-        throw new Error(data.error);
-      }
-    } catch (error) {
-      addNotification({
-        type: 'error',
-        title: 'Update Failed',
-        message: error instanceof Error ? error.message : 'Failed to update project',
-      });
-    } finally {
-      setSaving(false);
+      setCreating(false);
     }
   };
 
   const handleLoad = async (project: Project) => {
     setGraph(project.graph);
-    setProjectName(project.name);
     setCurrentProject(project.id, project.name);
+
+    // Load chat messages if they exist, otherwise clear them
+    if (project.chatMessages) {
+      // Convert timestamp strings back to Date objects
+      const messagesWithDates = project.chatMessages.map((msg: any) => ({
+        ...msg,
+        timestamp: typeof msg.timestamp === 'string' ? new Date(msg.timestamp) : msg.timestamp,
+      }));
+      setChatMessages(messagesWithDates);
+    } else {
+      setChatMessages([]);
+    }
+
     addNotification({
       type: 'success',
       title: 'Project Loaded',
@@ -159,6 +135,7 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
         });
         if (currentProjectId === projectId) {
           setCurrentProject(null, null);
+          setChatMessages([]);
         }
         await loadProjects();
       } else {
@@ -195,43 +172,18 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
         </div>
 
         <div className={styles.modalBody}>
-          <div className={styles.saveSection}>
-            <h3>Current Project</h3>
-            <div className={styles.saveForm}>
-              <input
-                type="text"
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder="Project name"
-                className={styles.projectNameInput}
-              />
-              <div className={styles.saveButtons}>
-                <button
-                  className={styles.btnPrimary}
-                  onClick={handleUpdate}
-                  disabled={saving}
-                >
-                  <Save size={16} />
-                  <span>{currentProjectId ? 'Update' : 'Save New'}</span>
-                </button>
-                {currentProjectId && (
-                  <button
-                    className={styles.btnSecondary}
-                    onClick={() => {
-                      setCurrentProject(null, null);
-                      setProjectName('Untitled Project');
-                    }}
-                  >
-                    <Plus size={16} />
-                    <span>Save as New</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
           <div className={styles.projectsList}>
-            <h3>Saved Projects</h3>
+            <div className={styles.projectsListHeader}>
+              <h3>Your Projects</h3>
+              <button
+                className={styles.btnPrimary}
+                onClick={handleCreateNew}
+                disabled={creating}
+              >
+                <Plus size={16} />
+                <span>New Project</span>
+              </button>
+            </div>
             {loading ? (
               <div className={styles.loadingState}>
                 <div className={styles.loadingSpinner} />
