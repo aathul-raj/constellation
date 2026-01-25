@@ -80,7 +80,7 @@ export default function GraphPanel() {
     nodes.map((node) => ({
       id: node.id,
       label: node.label,
-      fill: getStatusColor(node.data?.status || 'queued', is3D, theme === 'dark'),
+      fill: getStatusColor(node.data?.status || 'queued'),
       data: node.data
     })),
     [nodes, is3D, theme]
