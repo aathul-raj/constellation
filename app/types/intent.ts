@@ -1,6 +1,6 @@
 export type NodeType = 'input-file' | 'compute' | 'output-file';
 
-export type IntentType = 'create_node' | 'update_code' | 'update_name' | 'edit_node' | 'chat';
+export type IntentType = 'create_node' | 'update_code' | 'update_name' | 'edit_node' | 'generate_pipeline' | 'chat';
 
 export type CompletionStatus = 'complete' | 'needs_clarification' | 'error';
 
@@ -66,6 +66,50 @@ export interface ChatIntent {
   message?: string;
 }
 
+// Pipeline generation types for HPC-optimized workflows
+export interface PipelineNode {
+  tempId: string; // Temporary ID for referencing during generation
+  name: string;
+  type: NodeType;
+  pythonCode?: string;
+  parallelization?: {
+    strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
+    estimatedCores?: number;
+    chunkSize?: number;
+  };
+  // For parallel executor nodes that share the same script
+  scriptGroupId?: string; // Nodes with same scriptGroupId share identical code
+}
+
+export interface PipelineEdge {
+  from: string; // tempId of source node
+  to: string;   // tempId of target node
+}
+
+export interface ParallelizationPlan {
+  pattern: 'split-execute-reduce' | 'parallel-columns' | 'map-reduce' | 'sequential';
+  splitStrategy?: 'row-chunks' | 'column-groups' | 'file-based';
+  numPartitions?: number;
+  reduceStrategy?: 'concat' | 'merge' | 'aggregate' | 'custom';
+  description: string;
+}
+
+export interface GeneratePipelineIntent {
+  intent: 'generate_pipeline';
+  completeness: 'needs_clarification' | 'ready_to_generate';
+  // When asking clarifying questions
+  clarifyingQuestions?: string[];
+  understoodSoFar?: string; // Summary of what the AI understood
+  // When ready to generate
+  pipelineName?: string;
+  pipelineDescription?: string;
+  nodes?: PipelineNode[];
+  edges?: PipelineEdge[];
+  parallelizationPlan?: ParallelizationPlan;
+  estimatedPerformance?: string;
+  message?: string;
+}
+
 export interface ErrorResponse {
   error: string;
 }
@@ -75,5 +119,6 @@ export type AIResponse =
   | UpdateCodeIntent
   | UpdateNameIntent
   | EditNodeIntent
+  | GeneratePipelineIntent
   | ChatIntent
   | ErrorResponse;

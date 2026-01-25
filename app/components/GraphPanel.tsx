@@ -563,6 +563,37 @@ export default function GraphPanel() {
         className={`graph-container ${isDeleteMode ? 'delete-mode' : ''} ${isHoveringNode ? 'hover-node' : ''}`}
         ref={graphContainerRef}
       >
+        {graph.nodes.length === 0 && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '24px',
+              zIndex: 10
+            }}
+          >
+            <div
+              style={{
+                maxWidth: '420px',
+                textAlign: 'center',
+                padding: '20px 24px',
+                borderRadius: '12px',
+                background: 'rgba(15, 23, 42, 0.6)',
+                border: '1px solid rgba(148, 163, 184, 0.25)',
+                color: '#e2e8f0',
+                backdropFilter: 'blur(6px)'
+              }}
+            >
+              <div style={{ fontSize: '18px', fontWeight: 600, marginBottom: '6px' }}>Ready to compute</div>
+              <div style={{ fontSize: '14px', color: '#cbd5f5' }}>
+                Start by adding a new input node, then connect steps to build your workflow.
+              </div>
+            </div>
+          </div>
+        )}
         <GraphCanvas
           ref={graphRef}
           nodes={graphNodes}

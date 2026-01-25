@@ -21,35 +21,44 @@ export function extractInputParamName(signature: string): string {
  * Ensures that the actual parameter name is used instead of hardcoded 'in_df'
  */
 export function fixVariableReferences(code: string, inputParamName: string): string {
-  // If the code uses 'in_df' but the parameter is something else, replace it
-  if (inputParamName !== 'input' && inputParamName !== 'in_df') {
-    // Replace 'in_df' with the actual parameter name, but be careful with:
-    // - Comments (don't replace)
-    // - String literals (don't replace)
-    // - Already correct references (don't double-replace)
+  // Replace common placeholder input names with the actual parameter name
+  if (!inputParamName) return code;
 
-    const lines = code.split('\n');
-    const fixedLines = lines.map(line => {
-      // Skip comments
-      if (line.trim().startsWith('#')) {
-        return line;
-      }
+  const placeholders = new Set([
+    'in_df',
+    'input_df',
+    'input_data',
+    'data',
+    'df'
+  ]);
 
-      // Skip lines that are just strings or already use correct param
-      if (line.includes(`${inputParamName}.`)) {
-        return line;
-      }
-
-      // Replace in_df with the actual parameter name
-      // This regex handles: in_df.method, in_df['col'], in_df[col], etc.
-      const fixedLine = line.replace(/\bin_df\b/g, inputParamName);
-      return fixedLine;
-    });
-
-    return fixedLines.join('\n');
+  // Don't replace if inputParamName itself is a placeholder to avoid churn
+  if (placeholders.has(inputParamName)) {
+    return code;
   }
 
-  return code;
+  const lines = code.split('\n');
+  const fixedLines = lines.map(line => {
+    // Skip comments
+    if (line.trim().startsWith('#')) {
+      return line;
+    }
+
+    // Skip lines that already use correct param
+    if (line.includes(`${inputParamName}.`) || line.includes(`${inputParamName}[`)) {
+      return line;
+    }
+
+    let fixedLine = line;
+    placeholders.forEach((placeholder) => {
+      const regex = new RegExp(`\\b${placeholder}\\b`, 'g');
+      fixedLine = fixedLine.replace(regex, inputParamName);
+    });
+
+    return fixedLine;
+  });
+
+  return fixedLines.join('\n');
 }
 
 /**

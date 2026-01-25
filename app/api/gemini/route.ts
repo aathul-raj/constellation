@@ -21,7 +21,10 @@ export async function POST(request: NextRequest) {
     }
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    // Use standard model for simple tasks, more capable model for complex pipeline generation
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+    // More capable model for pipeline generation (handles complex multi-node graphs better)
+    const pipelineModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     const selectedNode = selectedNodeId
       ? graph?.nodes?.find((n: { id: string }) => n.id === selectedNodeId)
@@ -53,7 +56,7 @@ export async function POST(request: NextRequest) {
     })) || [];
 
     const historyText = history
-      ? `RECENT CHAT HISTORY:\n${history.map((h: any) => `${h.role.toUpperCase()}: ${h.content}`).join('\n')}\n`
+      ? `RECENT CHAT HISTORY (READ THIS CAREFULLY - user already provided this info):\n${history.map((h: any) => `${h.role.toUpperCase()}: ${h.content}`).join('\n')}\n\nIMPORTANT: DO NOT ask about anything the user already mentioned in the history above.\n`
       : '';
 
     const lastCreatedNode = lastCreatedNodeId
@@ -64,10 +67,19 @@ export async function POST(request: NextRequest) {
       ? `LAST CREATED NODE:\nID: ${lastCreatedNode.id}\nName: "${lastCreatedNode.name}"\nType: ${lastCreatedNode.type}\nWhen user says "that one", "from it", "from that", "a new one from there", they likely mean this node.`
       : '';
 
-    const pendingIntentContext = pendingIntent 
+    const pendingIntentContext = pendingIntent
       ? `PENDING INTENT (User is clarifying this):
 ${JSON.stringify(pendingIntent, null, 2)}
-IMPORTANT: The user is answering a question about the above intent. You must START with this intent and UPDATE it with the new info. Do not lose existing fields like 'nodeName', 'parentNodeId', or 'pythonCode' unless explicitly changed.`
+
+CRITICAL - The user is answering your previous questions:
+- READ THE RECENT CHAT HISTORY above to see what they already told you
+- DO NOT ask about things they already mentioned
+- If this is a 'generate_pipeline' intent:
+  - UPDATE 'understoodSoFar' by ADDING the new information to what's already there
+  - After 1-2 rounds of questions, you should have ENOUGH info - set completeness to "ready_to_generate"
+  - Make reasonable assumptions for missing details (e.g., standard column names, default settings)
+  - Include all nodes, edges, and code when ready
+- If this is a 'create_node' intent: Update with the new info without losing existing fields.`
       : '';
 
     const systemPrompt = `You are an AI assistant for an HPC (High-Performance Computing) workflow builder.
@@ -129,19 +141,28 @@ The 'in_df' parameter will contain this data structure.
 
 YOUR TASKS:
 1. **Detect intent**: Determine if the user wants to:
+   - **Generate an ENTIRE pipeline** (e.g., "build a pipeline to process sales data", "I want to do X with my dataset")
    - Create a NEW node (e.g., "add a filtering step", "create a compute node that aggregates")
+   - Edit an existing node (connections, code, name)
    - Update code on the selected node
-   - Rename a node
    - Just ask a question
 
-2. **For node creation requests**:
+2. **For FULL PIPELINE requests** (generate_pipeline intent):
+   - ALWAYS ask clarifying questions first (minimum one round)
+   - Understand: desired outputs, transformations, scale, performance needs
+   - If input file exists, reference its metadata in questions
+   - When ready: design an HPC-optimized dependency graph
+   - Apply parallelization patterns: split-execute-reduce, parallel-columns, map-reduce
+   - Generate all nodes with proper edges and code
+
+3. **For node creation requests**:
    - Extract the node type they want: input-file (uploading data), compute (processing), or output-file (results)
    - Extract the node name
    - Identify which parent node it should connect from (usually the most recent node before it)
    - If compute node: generate the Python code skeleton
    - If you can't determine something, ask for clarification
 
-3. **For code updates**: Generate parallelizable code for the selected node
+4. **For code updates**: Generate parallelizable code for the selected node
 
 PARALLELIZATION PRINCIPLES:
 1. **Chunk-based processing**: Process data in independent chunks that can run in parallel
@@ -340,6 +361,139 @@ CRITICAL RULES FOR EDIT_NODE:
   - If user says "remove connection to X", REPLACE: newOutConnections = [<all current IDs except X>]
   - When in doubt, ASK before applying changes
 
+For GENERATE_PIPELINE intent (when user describes an ENTIRE pipeline in natural language):
+{
+  "intent": "generate_pipeline",
+  "completeness": "needs_clarification" | "ready_to_generate",
+
+  // When asking clarifying questions (first round only - be decisive!)
+  "clarifyingQuestions": ["What output format do you need?", "How large is your dataset?"],
+  "understoodSoFar": "You want to process a CSV file and filter rows based on conditions...",
+
+  // When user answers (UPDATE understoodSoFar by ADDING to it, not replacing)
+  // Example progression:
+  // Round 1: "You want to process sales data and get monthly totals"
+  // Round 2: "You want to process a 20MB sales CSV, calculate rolling averages per region across 24 months, with date column in mm/dd/yy format, and output as CSV"
+  // After round 2 → you have ENOUGH → set completeness: "ready_to_generate"
+
+  // When ready to generate (after clarification)
+  "pipelineName": "Sales Data Aggregation Pipeline",
+  "pipelineDescription": "Processes sales CSV, filters by region, aggregates by month",
+  "nodes": [
+    {
+      "tempId": "input_1",
+      "name": "Sales Data Input",
+      "type": "input-file"
+    },
+    {
+      "tempId": "splitter_1",
+      "name": "Data Partitioner",
+      "type": "compute",
+      "pythonCode": "def task(sales_data_input):\\n    # Split into chunks...",
+      "parallelization": { "strategy": "map", "estimatedCores": 4 }
+    },
+    {
+      "tempId": "executor_1",
+      "name": "Process Chunk 1",
+      "type": "compute",
+      "pythonCode": "def task(data_partitioner):\\n    # Process chunk...",
+      "scriptGroupId": "chunk_processor"  // Same script as other executors
+    },
+    {
+      "tempId": "executor_2",
+      "name": "Process Chunk 2",
+      "type": "compute",
+      "pythonCode": "def task(data_partitioner):\\n    # Process chunk...",
+      "scriptGroupId": "chunk_processor"  // Same script - will be reused
+    },
+    {
+      "tempId": "reducer_1",
+      "name": "Merge Results",
+      "type": "compute",
+      "pythonCode": "def task(process_chunk_1, process_chunk_2):\\n    # Merge...",
+      "parallelization": { "strategy": "reduce" }
+    },
+    {
+      "tempId": "output_1",
+      "name": "Final Output",
+      "type": "output-file"
+    }
+  ],
+  "edges": [
+    { "from": "input_1", "to": "splitter_1" },
+    { "from": "splitter_1", "to": "executor_1" },
+    { "from": "splitter_1", "to": "executor_2" },
+    { "from": "executor_1", "to": "reducer_1" },
+    { "from": "executor_2", "to": "reducer_1" },
+    { "from": "reducer_1", "to": "output_1" }
+  ],
+  "parallelizationPlan": {
+    "pattern": "split-execute-reduce",
+    "splitStrategy": "row-chunks",
+    "numPartitions": 4,
+    "reduceStrategy": "concat",
+    "description": "Split 60MB CSV into 4 chunks, process in parallel, merge results"
+  },
+  "estimatedPerformance": "~4x speedup on 4 cores for I/O bound operations",
+  "message": "I've designed an HPC-optimized pipeline that splits your data into 4 chunks..."
+}
+
+CRITICAL RULES FOR GENERATE_PIPELINE:
+
+**1. CLARIFICATION PROTOCOL (1-2 rounds MAX)**:
+- **First request**: Ask ONLY the most essential missing details (max 3-4 questions)
+- **Second request**: If user provides answers, you should have ENOUGH to generate. Don't keep asking.
+- **READ THE CHAT HISTORY**: If the user already answered something, DO NOT ask again
+- **Be decisive**: If you have ~70% of the info, make reasonable assumptions and generate
+- Essential questions: data size, input format, output format, main transformation
+- Optional (can assume defaults): performance targets, specific column names, edge cases
+- If input file is already uploaded, reference its metadata in your questions
+
+**2. WHEN TO GENERATE (you have enough info if you know)**:
+- ✓ Input format (CSV, Parquet, etc.)
+- ✓ Approximate data size (helps determine if parallelization is worth it)
+- ✓ Main transformation/operation (filter, aggregate, join, etc.)
+- ✓ Output format
+- You CAN assume defaults for: column names, date formats, edge cases, performance targets
+- Example: "20MB CSV, filter by region, rolling averages, CSV output" = ENOUGH INFO → Generate!
+
+**3. DETECT PIPELINE REQUESTS** - Trigger words:
+- "build a pipeline for...", "I want to do X with a dataset"
+- "create a workflow that...", "design a data processing system"
+- "process this CSV to...", "I need to analyze..."
+- Any request describing END-TO-END data processing
+
+**4. HPC OPTIMIZATION PATTERNS** - Apply when beneficial:
+
+Pattern A: **Split-Execute-Reduce** (for large files)
+- Input → Splitter → N parallel Executors → Reducer → Output
+- Use when: dataset > 10MB, operations are row-independent
+- Executors share same scriptGroupId (code reuse)
+
+Pattern B: **Parallel Columns** (for wide feature generation)
+- Input → N parallel Column Processors → Merger → Output
+- Use when: generating many new columns independently
+
+Pattern C: **Map-Reduce** (for aggregations)
+- Input → Mapper nodes → Reducer → Output
+- Use when: computing aggregates like sum, count, mean by groups
+
+Pattern D: **Sequential** (when parallelism doesn't help)
+- Input → Compute → Output
+- Use when: operations have data dependencies or dataset is small
+
+**5. SCRIPT REUSE**:
+- When multiple nodes do the SAME operation on different data partitions:
+  - Generate the code ONCE
+  - Assign same scriptGroupId to all those nodes
+  - The system will reuse the script across those nodes
+
+**6. NODE NAMING CONVENTIONS**:
+- Splitter nodes: "Data Partitioner", "Chunk Splitter"
+- Executor nodes: "Process Chunk 1", "Process Chunk 2" (numbered)
+- Reducer nodes: "Merge Results", "Aggregate Outputs"
+- Use descriptive names that explain the operation
+
 For CHAT intent:
 {
   "intent": "chat",
@@ -348,6 +502,7 @@ For CHAT intent:
 
 IMPORTANT:
 - Always detect intent first from user message
+- **For ENTIRE PIPELINE requests**: Use generate_pipeline intent, ask clarifying questions FIRST
 - For node creation: extract all fields you can. If unsure about parentNodeId, nodeType, or name, ask for clarification
 - If user says "add a node that does X", you should detect this as create_node intent
 - If completeness is "needs_clarification", list the missing fields and ask specific questions
@@ -358,8 +513,17 @@ IMPORTANT:
 
     const fullPrompt = `${systemPrompt}\n\nUser request: ${prompt}`;
 
-    console.log("Sending to Gemini...");
-    const result = await model.generateContent(fullPrompt);
+    // Detect if this is likely a pipeline request early to use better model
+    const promptLower = prompt?.toLowerCase() || '';
+    const isLikelyPipelineRequest =
+      /(create|build|design|generate)\s+(a\s+)?(pipeline|workflow)/.test(promptLower) ||
+      /end-?to-?end/.test(promptLower) ||
+      /process\s+this\s+(csv|parquet|json|xlsx)/.test(promptLower) ||
+      pendingIntent?.intent === 'generate_pipeline';
+
+    console.log("Sending to Gemini...", isLikelyPipelineRequest ? "(using pipeline model)" : "(using lite model)");
+    const activeModel = isLikelyPipelineRequest ? pipelineModel : model;
+    const result = await activeModel.generateContent(fullPrompt);
     const text = result.response.text();
     console.log("Raw response:", text);
 
@@ -376,6 +540,203 @@ IMPORTANT:
         intent: "chat",
         message: text
       };
+    }
+
+    const shouldRetryGeneratePipeline =
+      parsed?.intent === 'chat' &&
+      pendingIntent?.intent === 'generate_pipeline';
+
+    const isPipelineRequest = (() => {
+      const historyText = Array.isArray(history)
+        ? history.map((h: any) => h?.content || '').join('\n')
+        : '';
+      const combined = [prompt || '', historyText, pendingIntent?.understoodSoFar || '']
+        .join('\n')
+        .toLowerCase();
+      return /(create|build|design|generate)\s+(a\s+)?(pipeline|workflow)/.test(combined) ||
+        /end-?to-?end/.test(combined) ||
+        /process\s+this\s+(csv|parquet|json|xlsx)/.test(combined);
+    })();
+
+    const hasAnsweredPipelineBasics = (() => {
+      const historyText = Array.isArray(history)
+        ? history.map((h: any) => h?.content || '').join('\n')
+        : '';
+      const combined = [
+        prompt || '',
+        historyText,
+        pendingIntent?.understoodSoFar || '',
+        Array.isArray(pendingIntent?.clarifyingQuestions) ? pendingIntent?.clarifyingQuestions.join('\n') : ''
+      ]
+        .join('\n')
+        .toLowerCase();
+
+      const hasInputFormat = /\b(csv|parquet|json|xlsx)\b/.test(combined);
+      const hasSize = /\b\d+(\.\d+)?\s*(mb|gb)\b/.test(combined);
+      const hasOutputFormat =
+        /\boutput\b[^\n]{0,60}\b(csv|parquet|json|xlsx|table|database)\b/.test(combined) ||
+        /\b(csv|parquet|json|xlsx)\s+output\b/.test(combined);
+
+      return hasInputFormat && (hasSize || hasOutputFormat);
+    })();
+
+    const shouldForceGenerateAfterClarification =
+      pendingIntent?.intent === 'generate_pipeline' &&
+      parsed?.intent === 'generate_pipeline' &&
+      parsed?.completeness === 'needs_clarification' &&
+      hasAnsweredPipelineBasics;
+
+    if (shouldRetryGeneratePipeline || shouldForceGenerateAfterClarification || (pendingIntent?.intent === 'generate_pipeline' && parsed?.intent === 'create_node')) {
+      const retryPrompt = `${systemPrompt}\n\nSTRICT OUTPUT REQUIREMENT:
+- You MUST respond with intent: "generate_pipeline" (NOT "create_node")
+- You MUST respond with valid JSON only
+- Do NOT include markdown, prose, or extra text
+- The user asked for a FULL PIPELINE, not a single node
+- Set completeness to "ready_to_generate" and include full nodes array + edges array
+- Generate the ENTIRE pipeline with all nodes and connections
+
+Previous context from pending intent:
+${JSON.stringify(pendingIntent, null, 2)}
+
+User latest answer: ${prompt}`;
+
+      // Use more capable model for pipeline generation
+      const retryResult = await pipelineModel.generateContent(retryPrompt);
+      const retryText = retryResult.response.text();
+
+      try {
+        const jsonMatch = retryText.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, retryText];
+        const jsonStr = jsonMatch[1]?.trim() || retryText.trim();
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        parsed = {
+          intent: "chat",
+          message: retryText
+        };
+      }
+    }
+
+    // Enforce at least one clarification round for new pipeline requests
+    if (
+      (parsed?.intent === 'generate_pipeline' || (parsed?.intent === 'create_node' && isPipelineRequest)) &&
+      !pendingIntent &&
+      parsed?.completeness === 'ready_to_generate'
+    ) {
+      parsed = {
+        intent: 'generate_pipeline',
+        completeness: 'needs_clarification',
+        understoodSoFar: `You want an end-to-end pipeline based on: "${prompt}"`,
+        clarifyingQuestions: [
+          'What is the approximate size of the dataset (e.g., MB/GB)?',
+          'What is the input format (e.g., CSV, Parquet)?',
+          'What output format do you need (e.g., CSV, database table)?'
+        ],
+        message: 'I can build the pipeline. I need a few details first.'
+      };
+    }
+
+    // If we have a pending pipeline and AI returned create_node or needs_clarification but user already answered basics
+    if (
+      pendingIntent?.intent === 'generate_pipeline' &&
+      hasAnsweredPipelineBasics
+    ) {
+      // Force it to be a pipeline generation if AI returned create_node
+      if (parsed?.intent === 'create_node') {
+        // AI is trying to create a single node instead of a full pipeline - this is wrong
+        // Force a final retry specifically for pipeline generation
+        const pipelineForcePrompt = `You are generating an HPC pipeline. The user requested a FULL PIPELINE, not individual nodes.
+
+USER'S ORIGINAL REQUEST (from context):
+${pendingIntent?.understoodSoFar || ''}
+
+USER'S LATEST ANSWER: ${prompt}
+
+YOU MUST GENERATE A COMPLETE PIPELINE with this exact JSON structure:
+{
+  "intent": "generate_pipeline",
+  "completeness": "ready_to_generate",
+  "pipelineName": "<descriptive name>",
+  "pipelineDescription": "<what the pipeline does>",
+  "nodes": [
+    {"tempId": "input_1", "name": "<name>", "type": "input-file"},
+    {"tempId": "compute_1", "name": "<name>", "type": "compute", "pythonCode": "def task(input_param):\\n    import pandas as pd\\n    ..."},
+    {"tempId": "output_1", "name": "<name>", "type": "output-file"}
+  ],
+  "edges": [
+    {"from": "input_1", "to": "compute_1"},
+    {"from": "compute_1", "to": "output_1"}
+  ],
+  "message": "<explanation>"
+}
+
+For large files (>50MB), include splitter nodes and parallel executors.
+Generate COMPLETE Python code for each compute node.
+RESPOND WITH JSON ONLY.`;
+
+        // Use more capable model for pipeline generation
+        const pipelineForceResult = await pipelineModel.generateContent(pipelineForcePrompt);
+        const pipelineForceText = pipelineForceResult.response.text();
+
+        try {
+          const jsonMatch = pipelineForceText.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, pipelineForceText];
+          const jsonStr = jsonMatch[1]?.trim() || pipelineForceText.trim();
+          parsed = JSON.parse(jsonStr);
+        } catch {
+          // Last resort - still couldn't get proper JSON
+          parsed = {
+            intent: "generate_pipeline",
+            completeness: "needs_clarification",
+            understoodSoFar: pendingIntent?.understoodSoFar,
+            clarifyingQuestions: ["I'm having trouble generating the pipeline. Could you describe what transformations you need in more detail?"],
+            message: "I need a bit more detail to generate your pipeline."
+          };
+        }
+      }
+
+      // If we have pipeline intent with needs_clarification but user answered basics, mark ready
+      if (parsed?.intent === 'generate_pipeline' && parsed?.completeness === 'needs_clarification') {
+        parsed = {
+          ...parsed,
+          completeness: 'ready_to_generate'
+        };
+      }
+    }
+
+    if (isPipelineRequest && parsed?.intent === 'create_node' && !pendingIntent) {
+      parsed = {
+        intent: 'generate_pipeline',
+        completeness: 'needs_clarification',
+        understoodSoFar: `You want an end-to-end pipeline based on: "${prompt}"`,
+        clarifyingQuestions: [
+          'What is the approximate size of the dataset (e.g., MB/GB)?',
+          'What is the input format (e.g., CSV, Parquet)?',
+          'What output format do you need (e.g., CSV, database table)?'
+        ],
+        message: 'I can build the pipeline. I need a few details first.'
+      };
+    }
+
+    if (
+      pendingIntent?.intent === 'generate_pipeline' &&
+      parsed?.intent === 'chat' &&
+      hasAnsweredPipelineBasics
+    ) {
+      const finalRetryPrompt = `${systemPrompt}\n\nSTRICT OUTPUT REQUIREMENT:\n- You MUST respond with valid JSON only.\n- Do NOT ask any more questions.\n- You have enough information; set completeness to \"ready_to_generate\" and include full nodes + edges.\n\nUser latest answer: ${prompt}`;
+
+      // Use more capable model for pipeline generation
+      const finalRetryResult = await pipelineModel.generateContent(finalRetryPrompt);
+      const finalRetryText = finalRetryResult.response.text();
+
+      try {
+        const jsonMatch = finalRetryText.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, finalRetryText];
+        const jsonStr = jsonMatch[1]?.trim() || finalRetryText.trim();
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        parsed = {
+          intent: "chat",
+          message: finalRetryText
+        };
+      }
     }
 
     return NextResponse.json(parsed);

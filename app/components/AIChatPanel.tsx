@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
-import type { AIResponse, NodeCreationIntent, EditNodeIntent } from '../types/intent';
+import type { AIResponse, NodeCreationIntent, EditNodeIntent, GeneratePipelineIntent } from '../types/intent';
 import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
 import { fixGeneratedCode, extractInputParamName } from '../utils/code-fixer';
 import { nodeNameToParamName } from '../utils/signature-generator';
@@ -28,6 +28,7 @@ export default function AIChatPanel() {
   const [streamingMessage, setStreamingMessage] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingNodeCreation, setPendingNodeCreation] = useState<NodeCreationIntent | null>(null);
+  const [pendingPipelineGeneration, setPendingPipelineGeneration] = useState<GeneratePipelineIntent | null>(null);
   const [lastCreatedNodeId, setLastCreatedNodeId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -99,7 +100,7 @@ export default function AIChatPanel() {
           selectedNodeId,
           lastCreatedNodeId,
           history: chatMessages.slice(-6).map(m => ({ role: m.role, content: m.content })),
-          pendingIntent: pendingNodeCreation
+          pendingIntent: pendingNodeCreation || pendingPipelineGeneration
         }),
       });
 
@@ -377,6 +378,137 @@ export default function AIChatPanel() {
           // Select the edited node so user can see the changes
           if (targetNodeId !== selectedNodeId) {
             selectNode(targetNodeId);
+          }
+          break;
+        }
+
+        case 'generate_pipeline': {
+          const pipelineData = data as GeneratePipelineIntent;
+
+          if (pipelineData.completeness === 'needs_clarification') {
+            // Store pending pipeline for follow-up
+            setPendingPipelineGeneration(pipelineData);
+            setPendingNodeCreation(null);
+
+            // Build clarification message
+            let clarifyMsg = pipelineData.understoodSoFar
+              ? `**Understood so far:** ${pipelineData.understoodSoFar}\n\n`
+              : '';
+
+            if (pipelineData.clarifyingQuestions?.length) {
+              clarifyMsg += `**I need a bit more information:**\n\n`;
+              clarifyMsg += pipelineData.clarifyingQuestions.map(q => `- ${q}`).join('\n');
+            }
+
+            const msg = clarifyMsg || pipelineData.message || 'I need more information to build your pipeline.';
+
+            streamText(msg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: msg
+              });
+            });
+          } else if ((pipelineData.completeness === 'ready_to_generate' || pipelineData.completeness === 'complete') && pipelineData.nodes && pipelineData.edges) {
+            // Clear pending state
+            setPendingPipelineGeneration(null);
+            setPendingNodeCreation(null);
+
+            // Create a mapping from tempId to actual nodeId
+            const tempIdToActualId = new Map<string, string>();
+
+            // First pass: Create all nodes
+            for (const nodeSpec of pipelineData.nodes) {
+              // Fix code if it's a compute node with code
+              let fixedCode = nodeSpec.pythonCode;
+
+              // Create the node without parent connection first (we'll connect via edges)
+              const actualId = createNode(
+                nodeSpec.type,
+                nodeSpec.name,
+                undefined, // No parent yet - edges will define connections
+                fixedCode
+              );
+
+              tempIdToActualId.set(nodeSpec.tempId, actualId);
+
+              // Update parallelization if specified
+              if (nodeSpec.parallelization) {
+                updateNodeParallelization(actualId, nodeSpec.parallelization);
+              }
+            }
+
+            // Second pass: Create all edges
+            for (const edge of pipelineData.edges) {
+              const sourceId = tempIdToActualId.get(edge.from);
+              const targetId = tempIdToActualId.get(edge.to);
+
+              if (sourceId && targetId) {
+                connectNodes(sourceId, targetId);
+              }
+            }
+
+            // Third pass: Fix code references now that we know the actual connections
+            for (const nodeSpec of pipelineData.nodes) {
+              if (nodeSpec.type === 'compute' && nodeSpec.pythonCode) {
+                const actualId = tempIdToActualId.get(nodeSpec.tempId);
+                if (actualId) {
+                  const incomingEdges = pipelineData.edges.filter(e => e.to === nodeSpec.tempId);
+                  if (incomingEdges.length > 0) {
+                    const parentTempId = incomingEdges[0].from;
+                    const parentSpec = pipelineData.nodes.find(n => n.tempId === parentTempId);
+
+                    if (parentSpec) {
+                      const inputParamName = nodeNameToParamName(parentSpec.name);
+                      const fixedCode = fixGeneratedCode(nodeSpec.pythonCode, inputParamName);
+                      updateNodeCode(actualId, fixedCode);
+                    }
+                  }
+                }
+              }
+            }
+
+            // Build success message
+            let successMsg = pipelineData.message || `**Pipeline Created: ${pipelineData.pipelineName}**\n\n`;
+
+            if (pipelineData.pipelineDescription) {
+              successMsg += `${pipelineData.pipelineDescription}\n\n`;
+            }
+
+            if (pipelineData.parallelizationPlan) {
+              successMsg += `**Parallelization:** ${pipelineData.parallelizationPlan.description}\n`;
+              successMsg += `- Pattern: ${pipelineData.parallelizationPlan.pattern}\n`;
+              if (pipelineData.parallelizationPlan.numPartitions) {
+                successMsg += `- Partitions: ${pipelineData.parallelizationPlan.numPartitions}\n`;
+              }
+            }
+
+            if (pipelineData.estimatedPerformance) {
+              successMsg += `\n**Estimated Performance:** ${pipelineData.estimatedPerformance}`;
+            }
+
+            streamText(successMsg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: successMsg
+              });
+            });
+
+            // Select the first input node for visibility
+            const firstInputNode = pipelineData.nodes.find(n => n.type === 'input-file');
+            if (firstInputNode) {
+              const actualId = tempIdToActualId.get(firstInputNode.tempId);
+              if (actualId) {
+                selectNode(actualId);
+              }
+            }
+          } else {
+            const msg = pipelineData.message || 'I need a bit more information to build your pipeline.';
+            streamText(msg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: msg
+              });
+            });
           }
           break;
         }

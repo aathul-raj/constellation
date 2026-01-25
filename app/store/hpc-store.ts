@@ -118,45 +118,7 @@ interface HPCStore {
 export const initialGraph: HPCGraph = {
   name: "Data Processing Pipeline",
   description: "Simple data processing workflow with input file, compute task, and output file",
-  nodes: [
-    {
-      id: "550e8400-e29b-41d4-a716-446655440000",
-      name: "Input Data",
-      type: "input-file",
-      status: "queued",
-      code: "",
-      in: [],
-      out: ["550e8400-e29b-41d4-a716-446655440001"]
-    },
-    {
-      id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Process Data",
-      type: "compute",
-      status: "queued",
-      code: `def task(in_df):
-    import numpy as np
-    import pandas as pd
-
-    # Your code here
-    out_df = in_df.copy()
-    
-    # Example transformation
-    # out_df['processed'] = True
-
-    return out_df`,
-      in: ["550e8400-e29b-41d4-a716-446655440000"],
-      out: ["550e8400-e29b-41d4-a716-446655440002"]
-    },
-    {
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Output Data",
-      type: "output-file",
-      status: "queued",
-      code: "",
-      in: ["550e8400-e29b-41d4-a716-446655440001"],
-      out: []
-    }
-  ]
+  nodes: []
 };
 
 export const useHPCStore = create<HPCStore>()(
