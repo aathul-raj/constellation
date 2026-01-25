@@ -24,7 +24,7 @@ const AnimatedNode = ({ size, color, opacity, active }: any) => {
       if (meshRef.current) {
         const currentScale = meshRef.current.scale.x;
         // Smooth lerp (0.1 = fast, 0.05 = slower)
-        const newScale = currentScale + (targetScale - currentScale) * 0.08;
+        const newScale = currentScale + (targetScale - currentScale) * 0.04;
 
         if (Math.abs(targetScale - newScale) > 0.001) {
           meshRef.current.scale.setScalar(newScale);
@@ -45,7 +45,7 @@ const AnimatedNode = ({ size, color, opacity, active }: any) => {
     <group>
       <mesh ref={meshRef}>
         <sphereGeometry attach="geometry" args={[size, 32, 32]} />
-        <meshBasicMaterial attach="material" color={active ? '#ffffff' : color} opacity={opacity} transparent />
+        <meshBasicMaterial attach="material" color={active ? '#3b82f6' : color} opacity={opacity} transparent />
       </mesh>
     </group>
   );
@@ -57,7 +57,7 @@ const renderCustomNode = (props: any) => <AnimatedNode {...props} />;
 export default function GraphPanel() {
   const { graph, selectedNodeId, selectNode, setGraph, theme, clearStore } = useHPCStore();
   const graphRef = useRef<GraphCanvasRef>(null);
-  const [layoutType, setLayoutType] = useState<LayoutTypes>('forceDirected2d');
+  const [layoutType, setLayoutType] = useState<LayoutTypes>('hierarchicalTd');
   const [is3D, setIs3D] = useState(false);
   const [isAddNodeOpen, setIsAddNodeOpen] = useState(false);
   const [isConnectionMode, setIsConnectionMode] = useState(false);
@@ -371,7 +371,9 @@ export default function GraphPanel() {
   const toggle3D = () => {
     const new3D = !is3D;
     setIs3D(new3D);
-    setLayoutType(new3D ? 'forceDirected3d' : 'forceDirected2d');
+    // Keep hierarchicalTd for both 2D and 3D modes
+    // 3D effect comes from camera rotation and lighting
+    setLayoutType('hierarchicalTd');
 
     setTimeout(() => {
       graphRef.current?.fitNodesInView();
@@ -400,49 +402,66 @@ export default function GraphPanel() {
     }
   }, [nodes]);
 
-  const customTheme = useMemo(() => ({
-    ...darkTheme,
-    canvas: {
-      ...darkTheme.canvas,
-      background: '#0a0a0f',
-      fog: '#0a0a0f'
-    },
-    ring: {
-      ...darkTheme.ring,
-      fill: 'rgba(0, 0, 0, 0)',
-      activeFill: 'rgba(0, 0, 0, 0)',
-    },
-    edge: {
-      ...darkTheme.edge,
-      fill: '#3b82f6',
-      activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa',
-      opacity: 0.8,
-      selectedOpacity: 1,
-      inactiveOpacity: 0.35,
-      size: 6,
-      strokeWidth: 6,
-    },
-    arrow: {
-      ...darkTheme.arrow,
-      fill: '#3b82f6',
-      activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa',
-      opacity: 0.35,
-      selectedOpacity: 1,
-    },
-    node: {
-      ...darkTheme.node,
-      fill: '#1f2937',
-      activeFill: '#3b82f6',
-      opacity: 0.9,
-      selectedOpacity: 1,
-      inactiveOpacity: 0.35,
-      label: {
-        ...darkTheme.node.label,
-        color: '#475569',
-        fontSize: 9,
-        activeColor: '#3b82f6'
+  useEffect(() => {
+    if (is3D && graphRef.current) {
+      // Set unbounded rotation for 3D camera
+      const controls = (graphRef.current as any).getControls?.();
+      if (controls) {
+        controls.minPolarAngle = 0;
+        controls.maxPolarAngle = Math.PI;
+        controls.minAzimuthAngle = -Infinity;
+        controls.maxAzimuthAngle = Infinity;
+        controls.autoRotate = false;
       }
-    }}), [isConnectionMode]);
+    }
+  }, [is3D]);
+
+  const customTheme = useMemo(() => {
+    const isDark = theme === 'dark';
+
+    return {
+      ...darkTheme,
+      canvas: {
+        ...darkTheme.canvas,
+        background: isDark ? '#0a0a0f' : '#fafafa',
+        fog: isDark ? '#0a0a0f' : '#fafafa'
+      },
+      // ring: {
+      //   ...darkTheme.ring,
+      //   fill: 'rgba(0, 0, 0, 0)',
+      //   activeFill: 'rgba(0, 0, 0, 0)',
+      // },
+      edge: { // controls the arrow line
+        ...darkTheme.edge,
+        fill: '#3b82f6',
+        activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa',
+        opacity: 0.8,
+        selectedOpacity: 1,
+        inactiveOpacity: 0.35,
+        size: 6,
+        strokeWidth: 6,
+      },
+      arrow: {
+        ...darkTheme.arrow,
+        fill: '#3b82f6',
+        activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa',
+        opacity: 0.35,
+        selectedOpacity: 1,
+      },
+      node: {
+        fill: isDark ? '#a1a1aa' : '#52525b',
+        activeFill: '#3b82f6',
+        opacity: 0.9,
+        selectedOpacity: 1,
+        inactiveOpacity: 0.6,
+        label: {
+          color: isDark ? '#a1a1aa' : '#52525b',
+          stroke: isDark ? '#0a0a0f' : '#fafafa',
+          activeColor: '#3b82f6',
+        },
+      }
+    };
+  }, [isConnectionMode, theme]);
 
   const sourceNodeName = graph.nodes.find(n => n.id === connectionSource)?.name;
   const targetNodeName = graph.nodes.find(n => n.id === connectionTarget)?.name;
@@ -546,6 +565,10 @@ export default function GraphPanel() {
           selections={selections}
           actives={selections}
           layoutType={layoutType}
+          layoutOverrides={{
+            nodeSeparation: 0.6,
+            nodeSize: [80, 80],
+          }}
           labelType="all"
           theme={customTheme}
           cameraMode={is3D ? 'rotate' : 'pan'}

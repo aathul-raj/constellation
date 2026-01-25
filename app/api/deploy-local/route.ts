@@ -76,6 +76,78 @@ async function uploadToS3(key: string, filePath: string): Promise<void> {
   }
 }
 
+// Helper function to execute a task (handles fan-out for multiple files)
+async function executeTaskForFile(
+  node: any,
+  nodeId: string,
+  fileIndex: number,
+  specificFile: any | null,
+  upstreamNodes: any[],
+  deployDir: string,
+  deploymentId: string,
+  nodeResults: Map<string, any>
+) {
+  try {
+    const scriptPath = join(deployDir, `${nodeId}-task.py`);
+    const outputDir = join(deployDir, nodeId, `file-${fileIndex}`);
+    mkdirSync(outputDir, { recursive: true });
+
+    // Set up environment variables
+    const outputPath = join(outputDir, 'output.csv');
+
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      BUCKET_NAME: deployDir,
+      OUTPUT_PATH: outputPath,
+    };
+
+    // Add input paths (absolute paths for local execution)
+    upstreamNodes.forEach((upstream: any) => {
+      let inputPath: string;
+
+      if (upstream.type === 'input-file' && upstream.files && upstream.files.length > 0) {
+        // If specific file is provided, use it; otherwise use first file
+        const file = specificFile || upstream.files[0];
+        inputPath = join(deployDir, 'inputs', file.id);
+      } else {
+        // Compute node output
+        inputPath = join(deployDir, upstream.id, 'file-0', 'output.csv');
+      }
+
+      env[`INPUT_${upstream.id}`] = inputPath;
+    });
+
+    // Execute the Python script
+    const fileName = specificFile ? specificFile.name : 'default';
+    console.log(`[${deploymentId}] Running task for ${node.name} (file: ${fileName})...`);
+
+    const { stdout, stderr } = await execFileAsync(PYTHON_VERSION, [scriptPath], {
+      env: env as NodeJS.ProcessEnv,
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+    });
+
+    if (stdout) console.log(`[${deploymentId}] [${node.name}:${fileIndex}] ${stdout}`);
+    if (stderr) console.log(`[${deploymentId}] [${node.name}:${fileIndex}] stderr: ${stderr}`);
+
+    // Upload output to S3
+    const s3OutputKey = `${nodeId}/file-${fileIndex}/output.csv`;
+    await uploadToS3(s3OutputKey, outputPath);
+    console.log(`[${deploymentId}] ✓ Uploaded output to S3: s3://${BUCKET_NAME}/${s3OutputKey}`);
+
+    // Store result
+    const resultKey = `${nodeId}-${fileIndex}`;
+    nodeResults.set(resultKey, { status: 'completed', fileIndex });
+    console.log(`[${deploymentId}] ✓ Completed task for ${node.name} (file ${fileIndex})`);
+
+    return { nodeId, fileIndex, status: 'completed' };
+  } catch (error) {
+    console.error(`[${deploymentId}] ✗ Failed to execute ${node.name} (file ${fileIndex}):`, error);
+    const resultKey = `${nodeId}-${fileIndex}`;
+    nodeResults.set(resultKey, { status: 'failed', error: String(error), fileIndex });
+    throw error;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { graph } = await request.json();
@@ -125,17 +197,21 @@ export async function POST(request: NextRequest) {
     const inputFileNodes = graph.nodes.filter((n: any) => n.type === 'input-file');
 
     for (const inputNode of inputFileNodes) {
-      if (inputNode.fileId) {
+      if (inputNode.files && inputNode.files.length > 0) {
         try {
           const inputDir = join(deployDir, 'inputs');
           mkdirSync(inputDir, { recursive: true });
-          const localInputPath = join(inputDir, inputNode.fileId);
 
-          // Download from S3
-          await downloadFromS3(inputNode.fileId, localInputPath);
-          console.log(`[${deploymentId}] ✓ Downloaded input file: ${inputNode.fileId}`);
+          // Download all files for this input node
+          for (const file of inputNode.files) {
+            const localInputPath = join(inputDir, file.id);
+
+            // Download from S3
+            await downloadFromS3(file.id, localInputPath);
+            console.log(`[${deploymentId}] ✓ Downloaded input file: ${file.name}`);
+          }
         } catch (error) {
-          console.error(`[${deploymentId}] ✗ Failed to download input file ${inputNode.fileId}:`, error);
+          console.error(`[${deploymentId}] ✗ Failed to download input files:`, error);
           throw error;
         }
       }
@@ -163,59 +239,47 @@ export async function POST(request: NextRequest) {
 
     for (const level of computeLevels) {
       levelIndex++;
-      console.log(`[${deploymentId}] Executing level ${levelIndex}/${computeLevels.length} (${level.length} jobs in parallel)...`);
 
-      // Execute all jobs in this level in parallel
-      const levelPromises = level.map(async (nodeId) => {
+      // Calculate total number of parallel jobs (fan out for multiple input files)
+      let totalJobs = 0;
+      for (const nodeId of level) {
         const node = nodeMap.get(nodeId) as any;
-        if (!node) return;
+        if (!node) continue;
 
-        try {
-          const scriptPath = join(deployDir, `${nodeId}-task.py`);
-          const outputDir = join(deployDir, nodeId);
-          mkdirSync(outputDir, { recursive: true });
+        // Check if this node has upstream input-file nodes with multiple files
+        const upstreamInputNodes = graph.nodes.filter((n: any) =>
+          node.in.includes(n.id) && n.type === 'input-file' && n.files && n.files.length > 0
+        );
 
-          // Set up environment variables
-          const upstreamNodes = graph.nodes.filter((n: any) => node.in.includes(n.id));
-          const outputPath = join(outputDir, 'output.csv');
+        if (upstreamInputNodes.length > 0 && upstreamInputNodes[0].files) {
+          totalJobs += upstreamInputNodes[0].files.length; // Fan out per file
+        } else {
+          totalJobs += 1; // Single execution
+        }
+      }
 
-          const env: NodeJS.ProcessEnv = {
-            ...process.env,
-            BUCKET_NAME: deployDir,
-            OUTPUT_PATH: outputPath,
-          };
+      console.log(`[${deploymentId}] Executing level ${levelIndex}/${computeLevels.length} (${totalJobs} jobs in parallel)...`);
 
-          // Add input paths (absolute paths for local execution)
-          upstreamNodes.forEach((upstream: any) => {
-            const inputPath = upstream.type === 'input-file' && upstream.fileId
-              ? join(deployDir, 'inputs', upstream.fileId)
-              : join(deployDir, upstream.id, 'output.csv');
-            env[`INPUT_${upstream.id}`] = inputPath;
-          });
+      // Execute all jobs in this level in parallel (with fan-out for multiple files)
+      const levelPromises = level.flatMap((nodeId) => {
+        const node = nodeMap.get(nodeId) as any;
+        if (!node) return [];
 
-          // Execute the Python script
-          console.log(`[${deploymentId}] Running task for ${node.name}...`);
-          const { stdout, stderr } = await execFileAsync(PYTHON_VERSION, [scriptPath], {
-            env,
-            maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-          });
+        const upstreamNodes = graph.nodes.filter((n: any) => node.in.includes(n.id));
 
-          if (stdout) console.log(`[${deploymentId}] [${node.name}] ${stdout}`);
-          if (stderr) console.log(`[${deploymentId}] [${node.name}] stderr: ${stderr}`);
+        // Check if we need to fan out (multiple input files)
+        const inputFileNode = upstreamNodes.find((n: any) =>
+          n.type === 'input-file' && n.files && n.files.length > 0
+        );
 
-          // Upload output to S3
-          const s3OutputKey = `${node.id}/output.csv`;
-          await uploadToS3(s3OutputKey, outputPath);
-          console.log(`[${deploymentId}] ✓ Uploaded output to S3: s3://${BUCKET_NAME}/${s3OutputKey}`);
-
-          nodeResults.set(nodeId, { status: 'completed' });
-          console.log(`[${deploymentId}] ✓ Completed task for ${node.name}`);
-
-          return { nodeId, status: 'completed' };
-        } catch (error) {
-          console.error(`[${deploymentId}] ✗ Failed to execute ${node.name}:`, error);
-          nodeResults.set(nodeId, { status: 'failed', error: String(error) });
-          throw error;
+        if (inputFileNode && inputFileNode.files && inputFileNode.files.length > 1) {
+          // Fan out: create one execution per input file
+          return inputFileNode.files.map((file: any, fileIndex: number) => 
+            executeTaskForFile(node, nodeId, fileIndex, file, upstreamNodes, deployDir, deploymentId, nodeResults)
+          );
+        } else {
+          // Single execution
+          return [executeTaskForFile(node, nodeId, 0, null, upstreamNodes, deployDir, deploymentId, nodeResults)];
         }
       });
 
@@ -232,14 +296,25 @@ export async function POST(request: NextRequest) {
 
     // 4. Prepare output files and map to output-file nodes
     const outputFiles: { [key: string]: string } = {};
-    const outputNodeUpdates: Array<{ nodeId: string; outputFileNodeId: string; csvContent: string }> = [];
+    const outputNodeUpdates: Array<{ nodeId: string; outputFileNodeId: string; csvContent: string; fileName: string }> = [];
 
-    for (const [nodeId, result] of nodeResults) {
-      const outputPath = join(deployDir, nodeId, 'output.csv');
+    for (const [resultKey, result] of nodeResults) {
+      // resultKey format: "${nodeId}-${fileIndex}" but nodeId contains dashes
+      // So we use the fileIndex from the result object instead
+      const fileIndex = result.fileIndex;
+      
+      // Extract nodeId by removing the last dash and number
+      const lastDashIndex = resultKey.lastIndexOf('-');
+      const nodeId = resultKey.substring(0, lastDashIndex);
+
+      const outputPath = join(deployDir, nodeId, `file-${fileIndex}`, 'output.csv');
       if (existsSync(outputPath)) {
         try {
           const content = readFileSync(outputPath, 'utf-8');
-          outputFiles[nodeId] = content;
+          outputFiles[resultKey] = content;
+
+          // The S3 key was already set during upload in executeTaskForFile
+          const s3OutputKey = `${nodeId}/file-${fileIndex}/output.csv`;
 
           // Find output-file nodes that are connected to this compute node
           const outputNodes = graph.nodes.filter((n: any) =>
@@ -250,11 +325,12 @@ export async function POST(request: NextRequest) {
             outputNodeUpdates.push({
               nodeId: outputNode.id,
               outputFileNodeId: outputNode.id,
-              csvContent: content
+              csvContent: content,
+              fileName: `output-${fileIndex}.csv`
             });
           });
         } catch (error) {
-          console.error(`[${deploymentId}] Failed to read output for ${nodeId}:`, error);
+          console.error(`[${deploymentId}] Failed to read output for ${resultKey}:`, error);
         }
       }
     }

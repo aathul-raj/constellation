@@ -96,6 +96,29 @@ export async function POST(request: NextRequest) {
     const nodeScripts = new Map();
     const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n] as [string, any]));
 
+    // 0.5 Upload requirements.txt to S3
+    console.log(`[${deploymentId}] Uploading dependencies...`);
+    const requirementsKey = `deployments/${deploymentId}/requirements.txt`;
+    const requirementsContent = `pandas>=2.0.0
+numpy>=1.24.0
+boto3>=1.28.0
+pyarrow>=12.0.0`;
+
+    try {
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: requirementsKey,
+          Body: requirementsContent,
+          ContentType: 'text/plain'
+        })
+      );
+      console.log(`[${deploymentId}] ✓ Uploaded requirements to s3://${BUCKET_NAME}/${requirementsKey}`);
+    } catch (error) {
+      console.error(`[${deploymentId}] ✗ Failed to upload requirements:`, error);
+      throw error;
+    }
+
     // 1. Generate executable scripts for each compute node and upload to S3
     console.log(`[${deploymentId}] Generating scripts for ${computeNodes.length} compute nodes...`);
 
@@ -173,13 +196,84 @@ export async function POST(request: NextRequest) {
             });
           });
 
+          const scriptKey = nodeScripts.get(node.id);
+
+          // Create a Python bootstrap script that installs dependencies, downloads, and executes the task
+          const bootstrapScript = `
+import subprocess
+import sys
+import os
+
+try:
+    bucket = os.environ.get('BUCKET_NAME', '${BUCKET_NAME}')
+    region = os.environ.get('AWS_REGION', '${REGION}')
+
+    # First, install boto3 to access private S3 bucket
+    print("Installing boto3...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "boto3"], check=True)
+
+    import boto3
+    s3 = boto3.client('s3', region_name=region)
+
+    # Download and install requirements.txt from S3
+    print("Downloading requirements from S3...")
+    reqs_key = "${requirementsKey}"
+    reqs_file = "/tmp/requirements.txt"
+    s3.download_file(bucket, reqs_key, reqs_file)
+
+    print("Installing dependencies...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-r", reqs_file], check=True)
+    print("Dependencies installed successfully")
+
+    # Download task script from S3
+    print("Downloading task script from S3...")
+    script_key = "${scriptKey}"
+    task_file = "/tmp/task.py"
+    s3.download_file(bucket, script_key, task_file)
+
+    print("Executing task")
+    print(f"Environment variables: BUCKET_NAME={bucket}, OUTPUT_PATH={os.environ.get('OUTPUT_PATH')}")
+    result = subprocess.run([sys.executable, task_file], check=False)
+
+    print(f"Task exited with code: {result.returncode}")
+
+    if result.returncode != 0:
+        print("Task failed!", file=sys.stderr)
+        sys.exit(result.returncode)
+
+    # Check if output file exists locally
+    output_path = os.environ.get('OUTPUT_PATH', '550e8400-e29b-41d4-a716-446655440001/output.csv')
+    if os.path.exists(output_path):
+        print(f"Output file found at {output_path}")
+        size = os.path.getsize(output_path)
+        print(f"Output file size: {size} bytes")
+    else:
+        print(f"Warning: Output file not found at {output_path}")
+
+    print("Bootstrap completed successfully")
+    sys.exit(0)
+
+except Exception as e:
+    print(f"Bootstrap error: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+`;
+
+          const command = [
+            'python3',
+            '-c',
+            bootstrapScript
+          ];
+
           const response = await batchClient.send(
             new SubmitJobCommand({
               jobName: `${node.id.slice(0, 8)}-${node.name.toLowerCase().replace(/\s+/g, '-')}`,
               jobQueue: BATCH_QUEUE_NAME,
               jobDefinition: BATCH_JOB_DEFINITION_ARN,
               containerOverrides: {
-                environment: environment
+                environment: environment,
+                command: command
               }
             })
           );
