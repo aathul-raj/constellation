@@ -4,7 +4,7 @@ import styles from './ConfirmationModal.module.css';
 
 interface ConfirmationModalProps {
   message: string;
-  type: 'edge' | 'node';
+  type: 'edge' | 'node' | 'all';
   onConfirm: () => void;
   onCancel: () => void;
   onEdgeOnly?: () => void; // For edge deletion with stranded node

@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
 
     const deploymentId = crypto.randomUUID();
     const nodeScripts = new Map();
-    const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n]));
+    const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n] as [string, any]));
 
     // 0.5 Upload requirements.txt to S3
     console.log(`[${deploymentId}] Uploading dependencies...`);
@@ -153,8 +153,8 @@ pyarrow>=12.0.0`;
     const computeLevels = levels
       .map(level =>
         level.filter(nodeId => {
-          const node = nodeMap.get(nodeId);
-          return node?.type === 'compute';
+          const node = nodeMap.get(nodeId) as any;
+          return node && node.type === 'compute';
         })
       )
       .filter(level => level.length > 0);
@@ -173,7 +173,7 @@ pyarrow>=12.0.0`;
 
       // Submit all jobs in this level in parallel
       for (const nodeId of level) {
-        const node = nodeMap.get(nodeId);
+        const node = nodeMap.get(nodeId) as any;
         if (!node) continue;
 
         try {
@@ -310,7 +310,7 @@ except Exception as e:
     const outputNodeUpdates: Array<{ nodeId: string; s3Key: string }> = [];
 
     for (const [nodeId] of nodeResults) {
-      const computeNode = nodeMap.get(nodeId);
+      const computeNode = nodeMap.get(nodeId) as any;
       if (computeNode) {
         // Find output-file nodes that are connected to this compute node
         const outputNodes = graph.nodes.filter((n: any) =>
@@ -336,7 +336,7 @@ except Exception as e:
         message: 'Deployment completed successfully',
         nodes: Array.from(nodeResults.entries()).map(([nodeId, result]) => ({
           id: nodeId,
-          name: nodeMap.get(nodeId)?.name || nodeId,
+          name: (nodeMap.get(nodeId) as any)?.name || nodeId,
           type: 'compute',
           status: result.status
         })),

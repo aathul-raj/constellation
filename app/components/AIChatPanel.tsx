@@ -3,20 +3,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
-
-interface AIResponse {
-  action?: 'update_code' | 'update_name' | 'chat';
-  nodeId?: string;
-  code?: string;
-  name?: string;
-  parallelization?: {
-    strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
-    estimatedCores?: number;
-    chunkSize?: number;
-  };
-  message?: string;
-  error?: string;
-}
+import type { AIResponse, NodeCreationIntent } from '../types/intent';
+import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
+import { fixGeneratedCode, extractInputParamName } from '../utils/code-fixer';
 
 export default function AIChatPanel() {
   const {
@@ -27,12 +16,17 @@ export default function AIChatPanel() {
     updateNodeCode,
     updateNodeName,
     updateNodeParallelization,
-    selectNode
+    selectNode,
+    createNode,
+    connectNodes,
+    disconnectNodes
   } = useHPCStore();
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [streamingMessage, setStreamingMessage] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [pendingNodeCreation, setPendingNodeCreation] = useState<NodeCreationIntent | null>(null);
+  const [lastCreatedNodeId, setLastCreatedNodeId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -100,12 +94,16 @@ export default function AIChatPanel() {
         body: JSON.stringify({
           prompt: userMessage,
           graph,
-          selectedNodeId
+          selectedNodeId,
+          lastCreatedNodeId,
+          history: chatMessages.slice(-6).map(m => ({ role: m.role, content: m.content })),
+          pendingIntent: pendingNodeCreation
         }),
       });
 
-      const data: AIResponse = await res.json();
+      const data = await res.json();
 
+      // Check for error response
       if (data.error) {
         const errorMsg = `Error: ${data.error}`;
         streamText(errorMsg, () => {
@@ -117,12 +115,137 @@ export default function AIChatPanel() {
         return;
       }
 
-      // Handle different actions
-      switch (data.action) {
+      // Handle different intents
+      switch (data.intent) {
+        case 'create_node': {
+          const nodeData = data as unknown as NodeCreationIntent;
+
+          // If Gemini has already determined completeness, trust it; don't re-validate
+          // Re-validation only happens if completeness is undefined (shouldn't happen)
+          let validatedIntent = nodeData;
+          if (validatedIntent.completeness === undefined) {
+            const nodeContext = extractNodeContext(graph);
+            validatedIntent = validateNodeCreationIntent(nodeData, nodeContext);
+          }
+
+          if (isReadyForNodeCreation(validatedIntent)) {
+            // All info available - create the node
+            setPendingNodeCreation(null);
+
+            // Resolve parent node ID if only name is provided
+            let resolvedParentId = validatedIntent.parentNodeId;
+            const parentNode = validatedIntent.parentNodeName && !resolvedParentId
+              ? graph.nodes.find(n =>
+                  n.name.toLowerCase() === validatedIntent.parentNodeName!.toLowerCase()
+                )
+              : graph.nodes.find(n => n.id === resolvedParentId);
+
+            if (validatedIntent.parentNodeName && !resolvedParentId && parentNode) {
+              resolvedParentId = parentNode.id;
+            }
+
+            // Fix generated code if it's a compute node
+            let fixedCode = validatedIntent.pythonCode;
+            if (validatedIntent.nodeType === 'compute' && fixedCode && parentNode) {
+              // Determine input parameter name from parent node name
+              const inputParamName = parentNode.name
+                .toLowerCase()
+                .replace(/[^a-z0-9_]/g, '_')
+                .replace(/^_+|_+$/g, '');
+
+              fixedCode = fixGeneratedCode(fixedCode, inputParamName);
+            }
+
+            // Create the node (automatically connects to parent)
+            const newNodeId = createNode(
+              validatedIntent.nodeType!,
+              validatedIntent.nodeName!,
+              resolvedParentId,
+              fixedCode
+            );
+
+            // Track the last created node for context in future requests
+            setLastCreatedNodeId(newNodeId);
+
+            // Handle connection to child/destination node if specified
+            if (validatedIntent.childNodeId || validatedIntent.childNodeName) {
+              let targetId = validatedIntent.childNodeId;
+              if (!targetId && validatedIntent.childNodeName) {
+                 const targetNode = graph.nodes.find(n =>
+                   n.name.toLowerCase() === validatedIntent.childNodeName!.toLowerCase()
+                 );
+                 targetId = targetNode?.id;
+              }
+
+              if (targetId) {
+                // Logic to handle replacement of existing connection
+                if (validatedIntent.replaceExistingConnection && resolvedParentId) {
+                   // Remove Direct Connection: Parent -> Target
+                   disconnectNodes(resolvedParentId, targetId);
+                }
+                
+                // Connect New Node -> Target
+                connectNodes(newNodeId, targetId);
+              }
+            }
+
+            selectNode(newNodeId);
+
+            const msg = validatedIntent.message ||
+              `Created new ${validatedIntent.nodeType} node "${validatedIntent.nodeName}". ${validatedIntent.pythonCode ? 'Code has been generated.' : ''}`;
+
+            streamText(msg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: msg
+              });
+            });
+          } else {
+            // Missing information - ask clarifying questions
+            setPendingNodeCreation(validatedIntent);
+
+            const questionsText = validatedIntent.clarifyingQuestions?.join('\n- ') || '';
+            const msg = `I can help you create this node. I need a bit more information:\n\n- ${questionsText}`;
+
+            streamText(msg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: msg
+              });
+            });
+          }
+          break;
+        }
+
         case 'update_code': {
           const targetNodeId = data.nodeId || selectedNodeId;
           if (targetNodeId && data.code) {
-            updateNodeCode(targetNodeId, data.code);
+            // Get the target node to determine input parameter name
+            const targetNode = graph.nodes.find(n => n.id === targetNodeId);
+
+            // Fix the generated code to use correct variable references
+            let fixedCode = data.code;
+            if (targetNode && targetNode.type === 'compute') {
+              // Determine the expected input parameter name
+              // This comes from the parent node name converted to a valid Python identifier
+              const parentNode = targetNode.in.length > 0
+                ? graph.nodes.find(n => n.id === targetNode.in[0])
+                : null;
+
+              let inputParamName = 'input';
+              if (parentNode) {
+                // Convert parent node name to valid Python identifier
+                inputParamName = parentNode.name
+                  .toLowerCase()
+                  .replace(/[^a-z0-9_]/g, '_')
+                  .replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
+              }
+
+              // Apply code fixes
+              fixedCode = fixGeneratedCode(data.code, inputParamName);
+            }
+
+            updateNodeCode(targetNodeId, fixedCode);
 
             // Update parallelization metadata if provided
             if (data.parallelization) {
@@ -139,7 +262,7 @@ export default function AIChatPanel() {
               ? `\n\n**Parallelization**: ${data.parallelization.strategy} (${data.parallelization.estimatedCores || 'auto'} cores)`
               : '';
 
-            const fullMessage = data.message || `Updated code for node.${parallelInfo}\n\n\`\`\`python\n${data.code}\n\`\`\``;
+            const fullMessage = data.message || `Updated code for node.${parallelInfo}\n\n\`\`\`python\n${fixedCode}\n\`\`\``;
 
             streamText(fullMessage, () => {
               addChatMessage({
@@ -196,7 +319,7 @@ export default function AIChatPanel() {
     } finally {
       setIsTyping(false);
     }
-  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, updateNodeParallelization, selectNode, streamText]);
+  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, updateNodeParallelization, selectNode, createNode, streamText]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
