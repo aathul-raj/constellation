@@ -42,11 +42,7 @@ export default function EditorPanel() {
     runProgress,
     setRunProgress,
     theme,
-    addNotification,
-    addConsoleLog,
-    clearConsoleLogs,
-    hasConsoleError,
-    setHasConsoleError
+    addNotification
   } = useHPCStore();
 
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
@@ -110,13 +106,6 @@ export default function EditorPanel() {
     setIsRunning(true);
     setRunProgress(0);
     resetAllStatuses();
-    clearConsoleLogs();
-    setHasConsoleError(false);
-
-    addConsoleLog({
-      type: 'info',
-      message: `Starting deployment...`
-    });
 
     try {
       const response = await fetch(endpoint, {
@@ -128,22 +117,22 @@ export default function EditorPanel() {
       const deployResult = await response.json();
 
       if (!response.ok) {
-        addConsoleLog({
+        addNotification({
           type: 'error',
-          message: `Deployment failed: ${deployResult.message || 'Failed to deploy pipeline'}`
+          title: 'Deployment Failed',
+          message: deployResult.message || 'Failed to deploy pipeline'
         });
-        setHasConsoleError(true);
         setIsRunning(false);
         return;
       }
 
       // Verify deployment completed successfully
       if (deployResult.status !== 'completed') {
-        addConsoleLog({
+        addNotification({
           type: 'error',
-          message: `Deployment error: ${deployResult.message || 'Deployment failed to complete'}`
+          title: 'Deployment Error',
+          message: deployResult.message || 'Deployment failed to complete'
         });
-        setHasConsoleError(true);
         setIsRunning(false);
         return;
       }
@@ -173,22 +162,60 @@ export default function EditorPanel() {
 
       // Process each output node
       for (const [nodeId, updates] of updatesByNode) {
+        // Clear existing output data first to avoid stale files showing
+        clearNodeCsvData(nodeId);
+        // Clear existing files from the node (copy array to avoid mutation during iteration)
+        const outputNode = graph.nodes.find(n => n.id === nodeId);
+        const existingFileIds = outputNode?.files?.map(f => f.id) || [];
+        existingFileIds.forEach(fileId => removeNodeFile(nodeId, fileId));
+        // Clear window cache for this node
+        if ((window as any).__outputFiles?.[nodeId]) {
+          delete (window as any).__outputFiles[nodeId];
+        }
+        // Reset output file viewer index
+        setSelectedOutputFileIndex(0);
+
         if (updates[0].s3Key) {
-          // AWS deployment - add S3 file references
-          for (const update of updates) {
-            addNodeFile(nodeId, {
-              id: update.s3Key,
-              name: update.fileName || `output-${Date.now()}.csv`
-            });
+          // AWS deployment - fetch S3 files and store content (same as local)
+          const fetchPromises = updates.map(async (update: any) => {
+            try {
+              const response = await fetch(`/api/files/${encodeURIComponent(update.s3Key)}`);
+              if (!response.ok) throw new Error('Failed to fetch file');
+              const content = await response.text();
+              return {
+                fileName: update.fileName || `output-${Date.now()}.csv`,
+                content: content
+              };
+            } catch (error) {
+              console.error(`Failed to fetch ${update.s3Key}:`, error);
+              return null;
+            }
+          });
+
+          const fetchedFiles = (await Promise.all(fetchPromises)).filter(f => f !== null);
+
+          if (fetchedFiles.length > 0) {
+            // Store first file's content in node
+            updateNodeCsvData(nodeId, fetchedFiles[0].content, fetchedFiles[0].fileName);
+
+            // Store all files for multi-file viewer
+            if (fetchedFiles.length > 1) {
+              (window as any).__outputFiles = (window as any).__outputFiles || {};
+              (window as any).__outputFiles[nodeId] = fetchedFiles;
+
+              addNotification({
+                type: 'info',
+                title: 'Multiple Output Files',
+                message: `Generated ${fetchedFiles.length} output files. Click "Download All" to get a zip file.`
+              });
+            }
           }
         } else if (updates[0].csvContent) {
-          // Local deployment - store all CSV files in a special property
-          // For now, just show the first file's content in the viewer
+          // Local deployment - store all CSV files
           updateNodeCsvData(nodeId, updates[0].csvContent, updates[0].fileName || 'output.csv');
           
-          // Store all output files for zip download
+          // Store all output files for multi-file viewer
           if (updates.length > 1) {
-            // Store reference to all files in the node (we'll add this to the store)
             (window as any).__outputFiles = (window as any).__outputFiles || {};
             (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
               fileName: u.fileName,
@@ -204,45 +231,21 @@ export default function EditorPanel() {
         }
       }
 
-      // Add console logs from deployment result
-      const consoleLogs = deployResult.consoleLogs || [];
-      let hasError = false;
-      consoleLogs.forEach((log: any) => {
-        addConsoleLog({
-          type: log.type || 'info',
-          message: log.message,
-          nodeId: log.nodeId,
-          nodeName: log.nodeName
-        });
-        if (log.type === 'error') {
-          hasError = true;
-        }
-      });
-
-      if (hasError) {
-        setHasConsoleError(true);
-      }
-
-      addConsoleLog({
-        type: 'success',
-        message: `Deployment completed successfully`
-      });
-
       addNotification({
         type: 'success',
         title: title,
         message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
       });
     } catch (error) {
-      addConsoleLog({
+      addNotification({
         type: 'error',
-        message: `Execution error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`
+        title: 'Execution Error',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
-      setHasConsoleError(true);
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addConsoleLog, clearConsoleLogs, setHasConsoleError]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addNodeFile, updateNodeCsvData, clearNodeCsvData, removeNodeFile]);
 
   const handleRun = useCallback(async () => {
     await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
@@ -542,31 +545,54 @@ export default function EditorPanel() {
                 </span>
               </div>
               {selectedNode.type === 'input-file' && (
-                <div className="file-actions">
-                  <label className="file-upload-btn">
-                    <Upload size={14} />
-                    <span>Upload Files</span>
-                    <input
-                      type="file"
-                      accept=".csv,.zip"
-                      multiple
-                      onChange={handleFileUpload}
-                      disabled={uploadingNodeId === selectedNodeId}
-                      style={{ display: 'none' }}
-                    />
-                  </label>
+                <>
+                  <div className="file-upload-section">
+                    <label className="file-upload-btn">
+                      <Upload size={14} />
+                      <span>Upload Files</span>
+                      <input
+                        type="file"
+                        accept=".csv,.zip"
+                        multiple
+                        onChange={handleFileUpload}
+                        disabled={uploadingNodeId === selectedNodeId}
+                        style={{ display: 'none' }}
+                      />
+                    </label>
+                    <span className="file-upload-hint">CSV or ZIP files</span>
+                  </div>
                   {selectedNode.files && selectedNode.files.length > 0 && (
-                    <span className="file-upload-hint">
-                      {selectedNode.files.length} file{selectedNode.files.length > 1 ? 's' : ''} uploaded
-                    </span>
+                    <div className="uploaded-files-list">
+                      <div className="files-header">
+                        <span>Uploaded Files ({selectedNode.files.length})</span>
+                      </div>
+                      {selectedNode.files.map((file) => (
+                        <div key={file.id} className="file-item">
+                          <div className="file-item-info">
+                            <FileText size={14} />
+                            <span className="file-name">{file.name}</span>
+                            {file.metadata?.rowCount && (
+                              <span className="file-meta">{file.metadata.rowCount} rows</span>
+                            )}
+                          </div>
+                          <button
+                            className="file-remove-btn"
+                            onClick={() => removeNodeFile(selectedNode.id, file.id)}
+                            title="Remove file"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   )}
-                </div>
+                </>
               )}
               {selectedNode.type === 'output-file' && (
                 <div className="file-actions">
                   {selectedNode.csvData || (selectedNode.files && selectedNode.files.length > 0) ? (
                     <>
-                      {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 && (
+                      {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
                         <button
                           className="file-download-btn"
                           onClick={handleDownloadAllAsZip}
@@ -575,6 +601,35 @@ export default function EditorPanel() {
                           <Download size={14} />
                           <span>Download All ({(window as any).__outputFiles[selectedNode.id].length} files)</span>
                         </button>
+                      ) : selectedNode.csvData ? (
+                        <button
+                          className="file-download-btn"
+                          onClick={handleDownloadCSV}
+                        >
+                          <Download size={14} />
+                          <span>Download CSV</span>
+                        </button>
+                      ) : null}
+                      {selectedNode.files && selectedNode.files.length > 0 && (
+                        <>
+                          <button
+                            className="file-download-btn"
+                            onClick={handleFileDownload}
+                          >
+                            <Download size={14} />
+                            <span>Download from S3</span>
+                          </button>
+                          <div className="uploaded-files-list">
+                            {selectedNode.files.map((file) => (
+                              <div key={file.id} className="file-item">
+                                <div className="file-item-info">
+                                  <FileText size={14} />
+                                  <span className="file-name">{file.name}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </>
                       )}
                     </>
                   ) : (
@@ -583,28 +638,6 @@ export default function EditorPanel() {
                 </div>
               )}
             </div>
-            {selectedNode.type === 'input-file' && selectedNode.files && selectedNode.files.length > 0 && (
-              <div className="uploaded-files-list">
-                {selectedNode.files.map((file) => (
-                  <div key={file.id} className="file-item">
-                    <div className="file-item-info">
-                      <FileText size={14} />
-                      <span className="file-name">{file.name}</span>
-                      {file.metadata?.rowCount && (
-                        <span className="file-meta">{file.metadata.rowCount} rows</span>
-                      )}
-                    </div>
-                    <button
-                      className="file-remove-btn"
-                      onClick={() => removeNodeFile(selectedNode.id, file.id)}
-                      title="Remove file"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
             {selectedNode.type === 'compute' && (
               <>
                 {/* Show input data schema */}
@@ -793,15 +826,11 @@ export default function EditorPanel() {
         <div className="footer-actions">
           {!consoleOpen && (
             <button
-              className={`btn btn-console ${hasConsoleError ? 'error' : ''}`}
-              onClick={() => {
-                setConsoleOpen(true);
-                setHasConsoleError(false);
-              }}
+              className="btn btn-console"
+              onClick={() => setConsoleOpen(true)}
             >
               <ChevronUp size={16} />
               Debug Console
-              {hasConsoleError && <span className="error-badge">!</span>}
             </button>
           )}
           <button

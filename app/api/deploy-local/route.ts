@@ -32,8 +32,6 @@ const getTempDir = () => {
   return tempDir;
 };
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
 // Helper to download file from S3
 async function downloadFromS3(key: string, destinationPath: string): Promise<void> {
   try {
