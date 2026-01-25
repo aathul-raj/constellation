@@ -57,7 +57,6 @@ const renderCustomNode = (props: any) => <AnimatedNode {...props} />;
 export default function GraphPanel() {
   const { graph, selectedNodeId, selectNode, setGraph, theme, clearStore } = useHPCStore();
   const graphRef = useRef<GraphCanvasRef>(null);
-  const [layoutType, setLayoutType] = useState<LayoutTypes>('hierarchicalTd');
   const [is3D, setIs3D] = useState(false);
   const [isAddNodeOpen, setIsAddNodeOpen] = useState(false);
   const [isConnectionMode, setIsConnectionMode] = useState(false);
@@ -75,6 +74,20 @@ export default function GraphPanel() {
   const graphContainerRef = useRef<HTMLDivElement>(null);
 
   const { nodes, edges } = useMemo(() => transformToReagraph(graph), [graph]);
+
+  const layoutType: LayoutTypes = useMemo(() => {
+    if (!graph.nodes.length) {
+      return is3D ? 'forceDirected3d' : 'forceDirected2d';
+    }
+
+    const rootCount = graph.nodes.filter(node => node.in.length === 0).length;
+
+    if (rootCount === 1) {
+      return 'hierarchicalTd';
+    }
+
+    return is3D ? 'forceDirected3d' : 'forceDirected2d';
+  }, [graph.nodes, is3D]);
 
   const graphNodes: GraphNode[] = useMemo(() =>
     nodes.map((node) => ({
@@ -371,10 +384,6 @@ export default function GraphPanel() {
   const toggle3D = () => {
     const new3D = !is3D;
     setIs3D(new3D);
-    // Keep hierarchicalTd for both 2D and 3D modes
-    // 3D effect comes from camera rotation and lighting
-    setLayoutType('hierarchicalTd');
-
     setTimeout(() => {
       graphRef.current?.fitNodesInView();
     }, 500);

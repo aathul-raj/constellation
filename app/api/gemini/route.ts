@@ -245,11 +245,38 @@ CRITICAL RULES FOR NODE CREATION:
    - ONLY if the user explicitly answers "replace" or "parallel", then set replaceExistingConnection.
    - If you are unsure, set completeness to "needs_clarification".
 
+4. **Connection Edits for Existing Nodes (IMPORTANT)**:
+  - When user says "add connection from A to B", that means a directed edge A → B.
+  - When user says "remove connection from A to B", remove ONLY the directed edge A → B.
+  - DO NOT remove any other connections unless explicitly asked.
+  - Compute nodes can have MULTIPLE inputs. Do not treat multiple inputs as an error.
+  - Prefer using add/remove fields below rather than replacing all connections.
+
 For UPDATE_CODE intent:
 {
   "intent": "update_code",
   "nodeId": "<node id to update>",
   "code": "<python code>",
+  "parallelization": {
+    "strategy": "map" | "reduce" | "map-reduce" | "vectorized" | "sequential",
+    "estimatedCores": <number>,
+    "chunkSize": <optional number>
+  },
+  "message": "<explanation>"
+}
+
+For EDIT_NODE intent (connection changes, renames, code changes on existing nodes):
+{
+  "intent": "edit_node",
+  "nodeId": "<node id to edit>",
+  "nodeName": "<node name if used instead of id>",
+  "addInConnections": ["<node id or name>"] , // add incoming connections (A → target)
+  "addOutConnections": ["<node id or name>"] , // add outgoing connections (target → B)
+  "removeInConnections": ["<node id or name>"] , // remove incoming connections (A → target)
+  "removeOutConnections": ["<node id or name>"] , // remove outgoing connections (target → B)
+  "newInConnections": ["<node id or name>"] , // ONLY if user says "set/replace" inputs
+  "newOutConnections": ["<node id or name>"] , // ONLY if user says "set/replace" outputs
+  "newCode": "<python code>",
   "parallelization": {
     "strategy": "map" | "reduce" | "map-reduce" | "vectorized" | "sequential",
     "estimatedCores": <number>,
@@ -265,6 +292,53 @@ For UPDATE_NAME intent:
   "name": "<new name>",
   "message": "<explanation>"
 }
+
+For EDIT_NODE intent (editing existing node connections or code):
+{
+  "intent": "edit_node",
+  "nodeId": "<id of node to edit - MUST be from the graph above>",
+  "nodeName": "<name of node to edit>",
+  "newInConnections": ["node_id_1", "node_id_2"] (optional, for changing inputs - MUST be valid node IDs from graph),
+  "newOutConnections": ["node_id_3"] (optional, for changing outputs - MUST be valid node IDs from graph),
+  "newCode": "<python code>" (optional, for compute nodes),
+  "parallelization": { ... } (optional, for compute nodes),
+  "message": "<explanation of what changed>"
+}
+
+Examples of EDIT_NODE usage:
+1. User: "Edit the Input Data node to also connect to the transform step"
+   → nodeId: "550e8400-e29b-41d4-a716-446655440000" (the actual ID from the graph)
+   → newOutConnections: ["550e8400-e29b-41d4-a716-446655440001"] (actual ID of transform node)
+
+2. User: "Change the output node to receive from the filter step instead"
+   → nodeId: "550e8400-e29b-41d4-a716-446655440002" (actual output node ID)
+   → newInConnections: ["node-id-of-filter-node"] (actual filter node ID from graph)
+
+3. User: "Update the compute node code to use vectorized operations"
+   → nodeId: "550e8400-e29b-41d4-a716-446655440001"
+   → newCode: "<updated python code>"
+
+CRITICAL RULES FOR EDIT_NODE:
+- **IMPORTANT - Node IDs MUST be valid**:
+  - ALL nodeId, newInConnections, and newOutConnections values MUST be actual node IDs from the provided graph
+  - Do NOT invent or make up node IDs
+  - Do NOT use node names as IDs - convert them to actual IDs by looking up in the graph
+  - If a node cannot be found, ask the user to clarify which node they mean
+- **Connection validation**:
+  - Input nodes (type: input-file) can only have OUT connections (they are sources)
+  - Output nodes (type: output-file) can only have IN connections (they are sinks)
+  - Compute nodes can have both IN and OUT connections
+  - Never create invalid connections (output → input, input ← output)
+- **When user says "connect to X" or "connects from Y"**:
+  - Find the EXACT node match in the graph by name
+  - Look up that node's ID in the graph
+  - Set either newOutConnections or newInConnections accordingly
+  - For compute nodes: ask if they want to REPLACE existing connections or ADD to them
+- **Replacement vs Addition**:
+  - If user says "connect to X instead", REPLACE: newOutConnections = [<actual ID of X>]
+  - If user says "also connect to X", ADD: newOutConnections = [...existing IDs, <actual ID of X>]
+  - If user says "remove connection to X", REPLACE: newOutConnections = [<all current IDs except X>]
+  - When in doubt, ASK before applying changes
 
 For CHAT intent:
 {
