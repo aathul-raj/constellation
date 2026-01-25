@@ -149,8 +149,8 @@ export async function POST(request: NextRequest) {
     const computeLevels = levels
       .map(level =>
         level.filter(nodeId => {
-          const node = nodeMap.get(nodeId);
-          return node?.type === 'compute';
+          const node = nodeMap.get(nodeId) as any;
+          return node && node.type === 'compute';
         })
       )
       .filter(level => level.length > 0);
@@ -167,7 +167,7 @@ export async function POST(request: NextRequest) {
 
       // Execute all jobs in this level in parallel
       const levelPromises = level.map(async (nodeId) => {
-        const node = nodeMap.get(nodeId);
+        const node = nodeMap.get(nodeId) as any;
         if (!node) return;
 
         try {
@@ -179,7 +179,7 @@ export async function POST(request: NextRequest) {
           const upstreamNodes = graph.nodes.filter((n: any) => node.in.includes(n.id));
           const outputPath = join(outputDir, 'output.csv');
 
-          const env = {
+          const env: NodeJS.ProcessEnv = {
             ...process.env,
             BUCKET_NAME: deployDir,
             OUTPUT_PATH: outputPath,
@@ -268,7 +268,7 @@ export async function POST(request: NextRequest) {
         message: 'Deployment completed successfully (local execution)',
         nodes: Array.from(nodeResults.entries()).map(([nodeId, result]) => ({
           id: nodeId,
-          name: nodeMap.get(nodeId)?.name || nodeId,
+          name: (nodeMap.get(nodeId) as any)?.name || nodeId,
           type: 'compute',
           status: result.status
         })),

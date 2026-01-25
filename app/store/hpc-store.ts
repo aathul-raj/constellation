@@ -111,15 +111,17 @@ const initialGraph: HPCGraph = {
       name: "Process Data",
       type: "compute",
       status: "queued",
-      code: `def task(input_data):  # do not edit this method header
+      code: `def task(in_df):
     import numpy as np
     import pandas as pd
 
     # Your code here
-    pass
+    out_df = in_df.copy()
+    
+    # Example transformation
+    # out_df['processed'] = True
 
-    # return the output df
-    return input_data`,
+    return out_df`,
       in: ["550e8400-e29b-41d4-a716-446655440000"],
       out: ["550e8400-e29b-41d4-a716-446655440002"]
     },
@@ -241,7 +243,7 @@ export const useHPCStore = create<HPCStore>()(
       type: nodeType,
       status: 'queued',
       code: pythonCode || (nodeType === 'compute'
-        ? `def task(input):\n    import numpy as np\n    import pandas as pd\n\n    # Your code here\n    pass\n\n    return input`
+        ? `def task(in_df):\n    import numpy as np\n    import pandas as pd\n\n    # Your code here\n    # Example: out_df = in_df.copy()\n    \n    return in_df`
         : ''
       ),
       in: parentNodeId ? [parentNodeId] : [],

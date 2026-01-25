@@ -5,6 +5,7 @@ import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import type { AIResponse, NodeCreationIntent } from '../types/intent';
 import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
+import { fixGeneratedCode, extractInputParamName } from '../utils/code-fixer';
 
 export default function AIChatPanel() {
   const {
@@ -133,11 +134,26 @@ export default function AIChatPanel() {
 
             // Resolve parent node ID if only name is provided
             let resolvedParentId = validatedIntent.parentNodeId;
-            if (validatedIntent.parentNodeName && !resolvedParentId) {
-              const parentNode = graph.nodes.find(n =>
-                n.name.toLowerCase() === validatedIntent.parentNodeName!.toLowerCase()
-              );
-              resolvedParentId = parentNode?.id;
+            const parentNode = validatedIntent.parentNodeName && !resolvedParentId
+              ? graph.nodes.find(n =>
+                  n.name.toLowerCase() === validatedIntent.parentNodeName!.toLowerCase()
+                )
+              : graph.nodes.find(n => n.id === resolvedParentId);
+
+            if (validatedIntent.parentNodeName && !resolvedParentId && parentNode) {
+              resolvedParentId = parentNode.id;
+            }
+
+            // Fix generated code if it's a compute node
+            let fixedCode = validatedIntent.pythonCode;
+            if (validatedIntent.nodeType === 'compute' && fixedCode && parentNode) {
+              // Determine input parameter name from parent node name
+              const inputParamName = parentNode.name
+                .toLowerCase()
+                .replace(/[^a-z0-9_]/g, '_')
+                .replace(/^_+|_+$/g, '');
+
+              fixedCode = fixGeneratedCode(fixedCode, inputParamName);
             }
 
             // Create the node (automatically connects to parent)
@@ -145,7 +161,7 @@ export default function AIChatPanel() {
               validatedIntent.nodeType!,
               validatedIntent.nodeName!,
               resolvedParentId,
-              validatedIntent.pythonCode
+              fixedCode
             );
 
             // Track the last created node for context in future requests
@@ -204,7 +220,32 @@ export default function AIChatPanel() {
         case 'update_code': {
           const targetNodeId = data.nodeId || selectedNodeId;
           if (targetNodeId && data.code) {
-            updateNodeCode(targetNodeId, data.code);
+            // Get the target node to determine input parameter name
+            const targetNode = graph.nodes.find(n => n.id === targetNodeId);
+
+            // Fix the generated code to use correct variable references
+            let fixedCode = data.code;
+            if (targetNode && targetNode.type === 'compute') {
+              // Determine the expected input parameter name
+              // This comes from the parent node name converted to a valid Python identifier
+              const parentNode = targetNode.in.length > 0
+                ? graph.nodes.find(n => n.id === targetNode.in[0])
+                : null;
+
+              let inputParamName = 'input';
+              if (parentNode) {
+                // Convert parent node name to valid Python identifier
+                inputParamName = parentNode.name
+                  .toLowerCase()
+                  .replace(/[^a-z0-9_]/g, '_')
+                  .replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
+              }
+
+              // Apply code fixes
+              fixedCode = fixGeneratedCode(data.code, inputParamName);
+            }
+
+            updateNodeCode(targetNodeId, fixedCode);
 
             // Update parallelization metadata if provided
             if (data.parallelization) {
@@ -221,7 +262,7 @@ export default function AIChatPanel() {
               ? `\n\n**Parallelization**: ${data.parallelization.strategy} (${data.parallelization.estimatedCores || 'auto'} cores)`
               : '';
 
-            const fullMessage = data.message || `Updated code for node.${parallelInfo}\n\n\`\`\`python\n${data.code}\n\`\`\``;
+            const fullMessage = data.message || `Updated code for node.${parallelInfo}\n\n\`\`\`python\n${fixedCode}\n\`\`\``;
 
             streamText(fullMessage, () => {
               addChatMessage({

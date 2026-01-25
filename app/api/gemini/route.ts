@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
+import { generateFunctionSignature } from '@/app/utils/signature-generator';
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,6 +26,15 @@ export async function POST(request: NextRequest) {
     const selectedNode = selectedNodeId
       ? graph?.nodes?.find((n: { id: string }) => n.id === selectedNodeId)
       : null;
+
+    // Generate the function signature for the selected node (if compute)
+    const expectedSignature = selectedNode && selectedNode.type === 'compute'
+      ? generateFunctionSignature(selectedNode, graph)
+      : null;
+
+    // Extract the input parameter name from the signature
+    const inputParamMatch = expectedSignature?.match(/def\s+task\s*\(\s*(\w+)\s*\)/);
+    const inputParamName = inputParamMatch ? inputParamMatch[1] : 'input';
 
     // Get input file metadata for the selected node
     const inputFileMetadata = selectedNode
@@ -70,7 +80,14 @@ ${selectedNode ? `SELECTED NODE:
 - Name: ${selectedNode.name}
 - Type: ${selectedNode.type}
 - Current Code:
-${selectedNode.code || "(empty)"}` : "No node selected."}
+${selectedNode.code || "(empty)"}
+${expectedSignature ? `
+IMPORTANT - THE FUNCTION SIGNATURE IS:
+${expectedSignature}
+
+This means the function parameter is named: ${inputParamName}
+YOU MUST use "${inputParamName}" in your code, NOT "in_df" or "input_data"
+Example: out_df = ${inputParamName}.copy()` : ''}` : "No node selected."}
 
 ${inputFileMetadata.length > 0 ? `
 INPUT DATA CONTEXT:
@@ -114,22 +131,32 @@ PARALLELIZATION PRINCIPLES:
 4. **Vectorized operations**: Use numpy/pandas vectorized ops instead of loops when possible
 5. **Independent operations**: Each chunk should be processable without data from other chunks
 
-EXAMPLE - Good (parallelizable, CSV input):
-def task(in_df, out_df):
-    import numpy as np
-    import pandas as pd
-    df = in_df  # or in_df['data'] depending on structure
-    df['doubled'] = df['value_column'] * 2
-    out_df['result'] = df
+CODE GENERATION REQUIREMENTS:
+1. **Robustness**: The generated code MUST be self-contained and error-resistant.
+2. **Defined Variables**: NEVER reference variables that are not explicitly defined.
+3. **MANDATORY**: You MUST STRICTLY use the variable name defined in the function signature.
+   - If you write def task(replace_with_ones):, YOU MUST use out_df = replace_with_ones.copy().
+   - referencing in_df when the argument is named replace_with_ones is a CRITICAL ERROR.
+4. **Input Handling**: The first argument is ALWAYS your input dataframe. Use it as the source.
+5. **Output Handling**: If modifying the data, explicitly define out_df = <input_arg_name>.copy() at the beginning.
+6. **Return Value**: ALWAYS return the output dataframe at the end.
 
-EXAMPLE - Bad (not parallelizable):
-def task(in_df, out_df):
-    import numpy as np
+EXAMPLE - Good (Consistent Naming):
+def task(my_data):
     import pandas as pd
-    total = 0
-    for item in in_df['data']:
-        total += item  # Sequential dependency
-    out_df['result'] = total
+    
+    out_df = my_data.copy()
+    
+    if 'value' in out_df.columns:
+        out_df['doubled'] = out_df['value'] * 2
+        
+    return out_df
+
+EXAMPLE - Bad (Inconsistent Naming):
+def task(input_data):
+    # Error: 'in_df' is undefined!
+    out_df = in_df.copy() 
+    return out_df
 
 RESPONSE FORMAT (always respond with valid JSON):
 

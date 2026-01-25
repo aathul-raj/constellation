@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
 
     const deploymentId = crypto.randomUUID();
     const nodeScripts = new Map();
-    const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n]));
+    const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n] as [string, any]));
 
     // 1. Generate executable scripts for each compute node and upload to S3
     console.log(`[${deploymentId}] Generating scripts for ${computeNodes.length} compute nodes...`);
@@ -130,8 +130,8 @@ export async function POST(request: NextRequest) {
     const computeLevels = levels
       .map(level =>
         level.filter(nodeId => {
-          const node = nodeMap.get(nodeId);
-          return node?.type === 'compute';
+          const node = nodeMap.get(nodeId) as any;
+          return node && node.type === 'compute';
         })
       )
       .filter(level => level.length > 0);
@@ -150,7 +150,7 @@ export async function POST(request: NextRequest) {
 
       // Submit all jobs in this level in parallel
       for (const nodeId of level) {
-        const node = nodeMap.get(nodeId);
+        const node = nodeMap.get(nodeId) as any;
         if (!node) continue;
 
         try {
@@ -216,7 +216,7 @@ export async function POST(request: NextRequest) {
     const outputNodeUpdates: Array<{ nodeId: string; s3Key: string }> = [];
 
     for (const [nodeId] of nodeResults) {
-      const computeNode = nodeMap.get(nodeId);
+      const computeNode = nodeMap.get(nodeId) as any;
       if (computeNode) {
         // Find output-file nodes that are connected to this compute node
         const outputNodes = graph.nodes.filter((n: any) =>
@@ -242,7 +242,7 @@ export async function POST(request: NextRequest) {
         message: 'Deployment completed successfully',
         nodes: Array.from(nodeResults.entries()).map(([nodeId, result]) => ({
           id: nodeId,
-          name: nodeMap.get(nodeId)?.name || nodeId,
+          name: (nodeMap.get(nodeId) as any)?.name || nodeId,
           type: 'compute',
           status: result.status
         })),
