@@ -271,7 +271,6 @@ export default function GraphPanel() {
     }, 1000);
   }, [nodes]);
 
-  // Custom theme with subtle selection ring
   const customTheme = {
     ...darkTheme,
     canvas: {
@@ -281,8 +280,8 @@ export default function GraphPanel() {
     },
     ring: {
       ...darkTheme.ring,
-      fill: '#1a3a4a',
-      activeFill: '#2a4a5a',
+      fill: 'rgba(0, 0, 0, 0)',
+      activeFill: '#3b82f6',
     },
     edge: {
       ...darkTheme.edge,
@@ -290,14 +289,26 @@ export default function GraphPanel() {
       activeFill: '#60a5fa',
       opacity: 0.8,
       selectedOpacity: 1,
-      inactiveOpacity: 0.3,
+      inactiveOpacity: 0.8,
     },
     arrow: {
       ...darkTheme.arrow,
       fill: '#3b82f6',
       activeFill: '#60a5fa',
     },
-  };
+    node: {
+      ...darkTheme.node,
+      fill: '#1f2937',
+      activeFill: '#3b82f6',
+      opacity: 0.9,
+      selectedOpacity: 1,
+      inactiveOpacity: 0.9,
+      label: {
+        color: '#475569',
+        // stroke: '#fff',
+        activeColor: '#3b82f6'
+      }
+    }};
 
   const sourceNodeName = graph.nodes.find(n => n.id === connectionSource)?.name;
   const targetNodeName = graph.nodes.find(n => n.id === connectionTarget)?.name;
@@ -319,14 +330,32 @@ export default function GraphPanel() {
     return selectedNodeId ? [selectedNodeId] : [];
   }, [isConnectionMode, connectionSource, connectionTarget, selectedNodeId, isDeleteMode, selectedEdge]);
 
+  const renderCustomNode = useCallback(({ size, color, opacity, active }: any) => (
+    <group>
+      <mesh>
+        <sphereGeometry attach="geometry" args={[size, 32, 32]} />
+        <meshStandardMaterial attach="material" color={active ? '#ffffff' : color} opacity={opacity} transparent />
+      </mesh>
+    </group>
+  ), []);
+
   return (
     <div className="graph-panel">
-      <div className="panel-header">
+      <div className="graph-panel-header">
         <div className="header-left">
           <h2>Pipeline Graph</h2>
           <span className="node-count">{graph.nodes.length} nodes</span>
         </div>
         <div className="header-controls">
+          <button
+            className="control-btn"
+            onClick={() => setIsAddNodeOpen(true)}
+            title="Add new node"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
           <button
             className={`control-btn ${isConnectionMode ? 'active' : ''}`}
             onClick={toggleConnectionMode}
@@ -343,15 +372,6 @@ export default function GraphPanel() {
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-            </svg>
-          </button>
-          <button
-            className="control-btn"
-            onClick={() => setIsAddNodeOpen(true)}
-            title="Add new node"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 5v14M5 12h14" />
             </svg>
           </button>
           <div className="control-divider" />
@@ -394,10 +414,12 @@ export default function GraphPanel() {
           onNodeClick={handleNodeClick}
           onEdgeClick={handleEdgeClick}
           selections={selections}
+          actives={selections}
           layoutType={layoutType}
           labelType="all"
           theme={customTheme}
           cameraMode={is3D ? 'rotate' : 'pan'}
+          renderNode={renderCustomNode}
         >
           {is3D && (
             <>

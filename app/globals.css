@@ -79,15 +79,18 @@ body {
 
 .resize-handle {
   width: 4px;
-  background: var(--border-color);
+  background: linear-gradient(90deg, var(--accent-secondary) 0%, var(--accent-primary) 100%);
   cursor: col-resize;
   position: relative;
   flex-shrink: 0;
-  transition: background 0.15s ease;
+  transition: all 0.2s ease;
+  opacity: 0.6;
 }
 
 .resize-handle:hover {
-  background: var(--accent-primary);
+  background: linear-gradient(90deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  opacity: 1;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
 }
 
 .resize-handle::before {
@@ -220,8 +223,7 @@ body {
   color: var(--text-primary);
 }
 
-/* Panel Common Styles */
-.panel-header {
+.graph-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -229,7 +231,15 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
-.panel-header h2 {
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.35rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.panel-header h2, .graph-panel-header h2 {
   font-size: 0.8125rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -237,7 +247,7 @@ body {
   color: var(--text-secondary);
 }
 
-.header-left {
+.header-left, .graph-panel-header .header-left {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -971,7 +981,7 @@ body {
 .chat-input-form {
   display: flex;
   gap: 0.5rem;
-  padding: 0.875rem 1rem;
+  padding: 1.31rem 1rem;
   border-top: 1px solid var(--border-color);
   background: var(--bg-tertiary);
 }

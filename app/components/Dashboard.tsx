@@ -8,7 +8,6 @@ import EditorPanel from './EditorPanel';
 import AIChatPanel from './AIChatPanel';
 import NotificationCenter from './NotificationCenter';
 
-// Dynamic import for GraphPanel to avoid SSR issues with reagraph
 const GraphPanel = dynamic(() => import('./GraphPanel'), {
   ssr: false,
   loading: () => (
@@ -26,7 +25,7 @@ const GraphPanel = dynamic(() => import('./GraphPanel'), {
 
 export default function Dashboard() {
   const { theme } = useHPCStore();
-  const [leftWidth, setLeftWidth] = useState(33.33); // percentage
+  const [leftWidth, setLeftWidth] = useState(35); // percentage
   const [middleWidth, setMiddleWidth] = useState(40); // percentage
   const [isDraggingLeft, setIsDraggingLeft] = useState(false);
   const [isDraggingRight, setIsDraggingRight] = useState(false);
@@ -51,14 +50,14 @@ export default function Dashboard() {
     const containerWidth = containerRect.width;
     const mouseX = e.clientX - containerRect.left;
     const percentage = (mouseX / containerWidth) * 100;
+    const minRightWidthPercent = (300 / containerWidth) * 100;
 
     if (isDraggingLeft) {
-      // Constrain left pane between 20% and 50%
-      const newLeftWidth = Math.min(Math.max(percentage, 20), 50);
+      const newLeftWidth = Math.min(Math.max(percentage, 35), 50);
       setLeftWidth(newLeftWidth);
     } else if (isDraggingRight) {
-      // Constrain middle pane
-      const newMiddleWidth = Math.min(Math.max(percentage - leftWidth, 20), 60);
+      const maxMiddleWidth = 100 - leftWidth - minRightWidthPercent;
+      const newMiddleWidth = Math.min(Math.max(percentage - leftWidth, 40), maxMiddleWidth);
       setMiddleWidth(newMiddleWidth);
     }
   }, [isDraggingLeft, isDraggingRight, leftWidth]);
@@ -104,7 +103,7 @@ export default function Dashboard() {
           className="resize-handle"
           onMouseDown={() => handleMouseDown('right')}
         />
-        <div style={{ width: `${rightWidth}%` }}>
+        <div style={{ width: `${rightWidth}%`, minWidth: '300px' }}>
           <AIChatPanel />
         </div>
       </main>
