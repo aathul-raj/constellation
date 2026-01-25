@@ -1,0 +1,24 @@
+# Development files
+.tmp/
+node_modules/
+.next/
+.vscode/
+.claude/
+
+# Local env files
+.env.local
+.env*.local
+
+# CSV test files
+*.csv
+input.zip
+
+# Build artifacts
+tsconfig.tsbuildinfo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker/
