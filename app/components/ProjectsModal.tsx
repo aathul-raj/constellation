@@ -23,6 +23,8 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
 
   useEffect(() => {
     loadProjects();
@@ -44,10 +46,10 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
     }
   };
 
-  const handleCreateNew = async () => {
-    const projectName = prompt('Enter a name for the new project:');
+  const handleCreateNew = async (e: React.FormEvent) => {
+    e.preventDefault();
 
-    if (!projectName?.trim()) {
+    if (!newProjectName.trim()) {
       return;
     }
 
@@ -57,7 +59,7 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: projectName.trim(),
+          name: newProjectName.trim(),
           graph: initialGraph,
           chatMessages: [],
         }),
@@ -69,14 +71,16 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
         // Load the new project
         setGraph(initialGraph);
         setChatMessages([]);
-        setCurrentProject(data.id, projectName.trim());
+        setCurrentProject(data.id, newProjectName.trim());
 
         addNotification({
           type: 'success',
           title: 'Project Created',
-          message: `${projectName} created successfully`,
+          message: `${newProjectName} created successfully`,
         });
 
+        setNewProjectName('');
+        setShowCreateForm(false);
         await loadProjects();
         onClose();
       } else {
@@ -175,14 +179,46 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
           <div className={styles.projectsList}>
             <div className={styles.projectsListHeader}>
               <h3>Your Projects</h3>
-              <button
-                className={styles.btnPrimary}
-                onClick={handleCreateNew}
-                disabled={creating}
-              >
-                <Plus size={16} />
-                <span>New Project</span>
-              </button>
+              {!showCreateForm ? (
+                <button
+                  className={styles.btnPrimary}
+                  onClick={() => setShowCreateForm(true)}
+                  disabled={creating}
+                >
+                  <Plus size={16} />
+                  <span>New Project</span>
+                </button>
+              ) : (
+                <form onSubmit={handleCreateNew} className={styles.createForm}>
+                  <input
+                    type="text"
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    placeholder="Project name..."
+                    className={styles.projectInput}
+                    autoFocus
+                    disabled={creating}
+                  />
+                  <button
+                    type="submit"
+                    className={styles.btnCreate}
+                    disabled={creating || !newProjectName.trim()}
+                  >
+                    {creating ? 'Creating...' : 'Create'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btnCancel}
+                    onClick={() => {
+                      setShowCreateForm(false);
+                      setNewProjectName('');
+                    }}
+                    disabled={creating}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              )}
             </div>
             {loading ? (
               <div className={styles.loadingState}>

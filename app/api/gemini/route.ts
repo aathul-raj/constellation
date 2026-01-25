@@ -370,14 +370,17 @@ IMPORTANT:
       const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, text];
       const jsonStr = jsonMatch[1]?.trim() || text.trim();
       parsed = JSON.parse(jsonStr);
+      console.log("Parsed response:", JSON.stringify(parsed, null, 2));
     } catch {
       // If not valid JSON, treat as chat response
       parsed = {
         intent: "chat",
         message: text
       };
+      console.log("Failed to parse JSON, using raw text as message");
     }
 
+    console.log("Returning to client - intent:", parsed.intent, "message:", parsed.message?.substring(0, 100));
     return NextResponse.json(parsed);
 
   } catch (error) {
