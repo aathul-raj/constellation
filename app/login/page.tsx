@@ -27,12 +27,12 @@ function ConstellationLogo({ size = 24 }: { size?: number }) {
 
 function PipelineStep({ number, title, desc }: { number: string, title: string, desc: string }) {
   return (
-    <div style={{ padding: '2rem', borderLeft: '1px solid rgba(59, 130, 246, 0.2)' }}>
-      <div style={{ fontFamily: 'JetBrains Mono', color: '#60a5fa', marginBottom: '0.5rem', fontSize: '0.8rem' }}>
+    <div className={styles.pipelineStep}>
+      <div className={styles.pipelineStepNumber}>
         {number}
       </div>
-      <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem', color: '#f8fafc' }}>{title}</h3>
-      <p style={{ fontSize: '0.875rem', color: '#94a3b8', lineHeight: 1.6 }}>{desc}</p>
+      <h3 className={styles.pipelineStepTitle}>{title}</h3>
+      <p className={styles.pipelineStepDesc}>{desc}</p>
     </div>
   );
 }
@@ -155,21 +155,21 @@ export default function LandingPage() {
           <span className={styles.sectionLabel}>02 — WORKFLOW</span>
           <h2>How it works.</h2>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
-          <PipelineStep 
-            number="01" 
-            title="Declare Intent" 
-            desc="Describe your data transformation in plain English or simplified Python definitions." 
+        <div className={styles.pipelineStepsGrid}>
+          <PipelineStep
+            number="01"
+            title="Declare Intent"
+            desc="Describe your data transformation in plain English or simplified Python definitions."
           />
-          <PipelineStep 
-            number="02" 
-            title="Graph Compilation" 
-            desc="Our engine builds a Directed Acyclic Graph (DAG) optimized for parallel execution." 
+          <PipelineStep
+            number="02"
+            title="Graph Compilation"
+            desc="Our engine builds a Directed Acyclic Graph (DAG) optimized for parallel execution."
           />
-          <PipelineStep 
-            number="03" 
-            title="Distributed Compute" 
-            desc="Tasks are dispatched to ephemeral microVMs for instant processing at scale." 
+          <PipelineStep
+            number="03"
+            title="Distributed Compute"
+            desc="Tasks are dispatched to ephemeral microVMs for instant processing at scale."
           />
         </div>
       </section>
