@@ -42,7 +42,9 @@ export default function EditorPanel() {
     runProgress,
     setRunProgress,
     theme,
-    addNotification
+    addNotification,
+    addConsoleLog,
+    clearConsoleLogs
   } = useHPCStore();
 
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
@@ -105,12 +107,83 @@ export default function EditorPanel() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+  // Pre-deployment lint check
+  const lintComputeNodes = useCallback(async () => {
+    const computeNodes = graph.nodes.filter(n => n.type === 'compute');
+    const errors: Array<{ nodeName: string; errors: string[] }> = [];
+
+    for (const node of computeNodes) {
+      if (!node.code || !node.code.trim()) {
+        continue;
+      }
+
+      try {
+        // Import createExecutableScript dynamically
+        const { createExecutableScript } = await import('../utils/code-wrapper');
+        const completeScript = createExecutableScript(node, graph);
+
+        const lintResponse = await fetch('/api/lint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: completeScript })
+        });
+
+        const lintResult = await lintResponse.json();
+
+        if (!lintResult.valid && lintResult.errors) {
+          errors.push({
+            nodeName: node.name,
+            errors: lintResult.errors
+          });
+        }
+      } catch (error) {
+        errors.push({
+          nodeName: node.name,
+          errors: [error instanceof Error ? error.message : 'Unknown error']
+        });
+      }
+    }
+
+    return errors;
+  }, [graph]);
+
   const runDeployment = useCallback(async (endpoint: string, title: string) => {
     if (isRunning) return;
+
+    // Run pre-deployment lint check
+    const lintErrors = await lintComputeNodes();
+    
+    if (lintErrors.length > 0) {
+      // Display syntax errors to user
+      const errorMessages = lintErrors.map(({ nodeName, errors }) => 
+        `**${nodeName}**: ${errors.join('; ')}`
+      ).join('\n\n');
+
+      addNotification({
+        type: 'error',
+        title: 'Syntax Errors Detected',
+        message: `Please fix the following errors before running:\n\n${errorMessages}`
+      });
+
+      // Also add to console logs
+      clearConsoleLogs();
+      lintErrors.forEach(({ nodeName, errors }) => {
+        errors.forEach(error => {
+          addConsoleLog({
+            type: 'error',
+            message: error,
+            nodeName: nodeName
+          });
+        });
+      });
+
+      return;
+    }
 
     setIsRunning(true);
     setRunProgress(0);
     resetAllStatuses();
+    clearConsoleLogs();
 
     try {
       const response = await fetch(endpoint, {
@@ -120,6 +193,18 @@ export default function EditorPanel() {
       });
 
       const deployResult = await response.json();
+
+      // Process console logs if available (even on error)
+      if (deployResult.consoleLogs && Array.isArray(deployResult.consoleLogs)) {
+        deployResult.consoleLogs.forEach((log: any) => {
+          addConsoleLog({
+            type: log.type || 'info',
+            message: log.message,
+            nodeId: log.nodeId,
+            nodeName: log.nodeName
+          });
+        });
+      }
 
       if (!response.ok) {
         addNotification({
@@ -256,7 +341,7 @@ export default function EditorPanel() {
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addNodeFile, updateNodeCsvData, clearNodeCsvData, removeNodeFile]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addNodeFile, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
 
   const handleRun = useCallback(async () => {
     await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
