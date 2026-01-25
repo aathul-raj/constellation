@@ -4,12 +4,19 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
   padding: 20px;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .modalContent {
@@ -21,6 +28,20 @@
   max-height: 80vh;
   display: flex;
   flex-direction: column;
+  animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .modalHeader {
@@ -78,8 +99,10 @@
 }
 
 .projectsListHeader .btnPrimary {
-  flex: 0;
+  flex-shrink: 0;
   white-space: nowrap;
+  position: relative;
+  z-index: 1;
 }
 
 .btnPrimary {
@@ -93,7 +116,7 @@
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
-  background: var(--accent-color);
+  background: var(--accent-primary);
   color: white;
 }
 
@@ -121,7 +144,7 @@
   width: 40px;
   height: 40px;
   border: 3px solid var(--border-color);
-  border-top-color: var(--accent-color);
+  border-top-color: var(--accent-primary);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
@@ -167,12 +190,12 @@
 }
 
 .projectCard:hover {
-  border-color: var(--accent-color);
+  border-color: var(--accent-primary);
   background: var(--bg-tertiary);
 }
 
 .projectCard.active {
-  border-color: var(--accent-color);
+  border-color: var(--accent-primary);
   background: var(--bg-tertiary);
 }
 
@@ -231,7 +254,7 @@
 
 .projectInput:focus {
   outline: none;
-  border-color: var(--accent-color);
+  border-color: var(--accent-primary);
   background: var(--bg-secondary);
 }
 
@@ -255,7 +278,7 @@
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
-  background: var(--accent-color);
+  background: var(--accent-primary);
   color: white;
   white-space: nowrap;
 }

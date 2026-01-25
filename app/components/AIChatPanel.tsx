@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Loader2 } from 'lucide-react';
+import { Send, Bot, User, Loader2, Trash2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import type { AIResponse, NodeCreationIntent, EditNodeIntent, GeneratePipelineIntent } from '../types/intent';
 import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
@@ -12,6 +12,7 @@ export default function AIChatPanel() {
   const {
     chatMessages,
     addChatMessage,
+    setChatMessages,
     graph,
     selectedNodeId,
     setGraph,
@@ -843,11 +844,29 @@ export default function AIChatPanel() {
     ? graph.nodes.find(n => n.id === selectedNodeId)
     : null;
 
+  const handleClearChat = useCallback(() => {
+    setChatMessages([]);
+    setPendingNodeCreation(null);
+    setPendingPipelineGeneration(null);
+    setLastCreatedNodeId(null);
+  }, [setChatMessages]);
+
   return (
     <div className="chat-panel">
       <div className="ai-assistant-panel-header">
         <h2>AI Assistant</h2>
-        <span className="status-indicator online">Online</span>
+        <div className="header-actions">
+          {chatMessages.length > 0 && (
+            <button
+              className="clear-chat-btn"
+              onClick={handleClearChat}
+              title="Clear chat"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+          <span className="status-indicator online">Online</span>
+        </div>
       </div>
 
       {selectedNode && (

@@ -348,7 +348,7 @@ export default function EditorPanel() {
   }, [runDeployment]);
 
   const handleRunLocal = useCallback(async () => {
-    await runDeployment('/api/deploy-local', 'Pipeline Executed (Local)');
+    await runDeployment('/api/deploy-local', 'Local Test Complete');
   }, [runDeployment]);
 
   const handleReset = useCallback(() => {
@@ -1066,22 +1066,23 @@ export default function EditorPanel() {
             className={`btn btn-secondary ${isRunning ? 'running' : ''}`}
             onClick={handleRunLocal}
             disabled={isRunning}
-            title="Run locally on this machine (requires Python 3)"
+            title="Test your scripts locally before deploying to cloud"
           >
             <Play size={16} />
-            {isRunning ? 'Running...' : 'Run Locally'}
+            {isRunning ? 'Testing...' : 'Test Pipeline'}
           </button>
           <button
             className={`btn btn-primary ${isRunning ? 'running' : ''}`}
             onClick={handleRun}
             disabled={isRunning}
-            title="Run on AWS Batch"
+            title="Deploy and run on distributed cloud compute clusters"
           >
             <Play size={16} />
-            {isRunning ? 'Running...' : 'Run on AWS'}
+            {isRunning ? 'Deploying...' : 'Deploy to Cloud'}
           </button>
         </div>
       </div>
+
     </div>
   );
 }

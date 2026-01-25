@@ -327,6 +327,33 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
+.ai-assistant-panel-header .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.clear-chat-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.clear-chat-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
 .panel-header h2, .graph-panel-header h2, .ai-assistant-panel-header h2 {
   font-size: 0.8125rem;
   font-weight: 600;
