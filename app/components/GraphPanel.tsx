@@ -444,9 +444,9 @@ export default function GraphPanel() {
         ...darkTheme.edge,
         fill: '#3b82f6',
         activeFill: isConnectionMode ? '#3b82f6' : '#60a5fa',
-        opacity: 0.8,
+        opacity: 1,
         selectedOpacity: 1,
-        inactiveOpacity: 0.35,
+        inactiveOpacity: 0.5,
         size: 6,
         strokeWidth: 6,
       },
@@ -632,30 +632,15 @@ export default function GraphPanel() {
         )}
 
         {isDeleteMode && !selectedEdge && (
-          <div style={{ position: 'absolute', top: '20px', left: '20px', right: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 50, gap: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: '8px', border: '1px solid rgba(248,113,113,0.3)', backdropFilter: 'blur(4px)' }}>
-              <Info size={16} style={{ color: '#ef5350' }} />
-              <span style={{ fontSize: '14px', color: '#f5f5f5' }}>Select an edge or node to delete</span>
+          <div className="delete-mode-overlay">
+            <div className="delete-mode-info">
+              <Info size={16} />
+              <span>Select an edge or node to delete</span>
             </div>
-            
+
             <button
               onClick={handleClearAll}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '8px 16px',
-                backgroundColor: '#ef4444',
-                color: 'white',
-                border: 'none',
-                borderRadius: '24px',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontWeight: 500,
-                boxShadow: '0 2px 8px rgba(239,68,68,0.3)',
-                whiteSpace: 'nowrap',
-                flexShrink: 0
-              }}
+              className="delete-mode-clear-btn"
             >
               <Trash2 size={16} />
               Clear All

@@ -398,10 +398,10 @@ body {
 }
 
 .control-btn.active {
-  background: rgba(59, 130, 246, 0.15);
+  background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
   color: var(--accent-primary);
   border-color: var(--accent-primary);
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-primary) 20%, transparent);
 }
 
 .control-divider {
@@ -2168,11 +2168,11 @@ body {
   top: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(10, 10, 15, 0.85);
+  background: var(--bg-secondary);
   backdrop-filter: blur(8px);
   padding: 8px 16px;
   border-radius: 9999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2185,12 +2185,64 @@ body {
   animation: slideDownFade 0.3s ease-out forwards;
 }
 
+.delete-mode-overlay {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 50;
+  gap: 16px;
+}
+
+.delete-mode-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--error) 30%, var(--border-color));
+  backdrop-filter: blur(4px);
+  color: var(--error);
+  font-size: 14px;
+}
+
+.delete-mode-info span {
+  color: var(--text-primary);
+}
+
+.delete-mode-clear-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--error);
+  color: white;
+  border: none;
+  border-radius: 24px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--error) 30%, transparent);
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.delete-mode-clear-btn:hover {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--error) 40%, transparent);
+  transform: translateY(-1px);
+}
+
 .text-blue-400 {
-  color: #60a5fa;
+  color: var(--accent-primary);
 }
 
 .text-red-400 {
-  color: #f87171;
+  color: var(--error);
 }
 
 @keyframes slideDownFade {

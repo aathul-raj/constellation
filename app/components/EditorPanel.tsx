@@ -128,6 +128,16 @@ export default function EditorPanel() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+  // Helper to run with timeout
+  const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error('Operation timed out')), timeoutMs)
+      )
+    ]);
+  };
+
   // Pre-deployment lint check
   const lintComputeNodes = useCallback(async () => {
     const computeNodes = graph.nodes.filter(n => n.type === 'compute');
@@ -143,11 +153,14 @@ export default function EditorPanel() {
         const { createExecutableScript } = await import('../utils/code-wrapper');
         const completeScript = createExecutableScript(node, graph);
 
-        const lintResponse = await fetch('/api/lint', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: completeScript })
-        });
+        const lintResponse = await withTimeout(
+          fetch('/api/lint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: completeScript })
+          }),
+          10000 // 10 second timeout for linter
+        );
 
         const lintResult = await lintResponse.json();
 
@@ -158,15 +171,29 @@ export default function EditorPanel() {
           });
         }
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        const isTimeout = errorMessage.includes('timed out') || errorMessage.includes('timeout');
+
         errors.push({
           nodeName: node.name,
-          errors: [error instanceof Error ? error.message : 'Unknown error']
+          errors: [isTimeout ? 'Linter timeout - check for infinite loops or complex code' : errorMessage]
         });
+
+        // Mark node as failed if linter times out
+        if (isTimeout) {
+          updateNodeStatus(node.id, 'failed');
+          addConsoleLog({
+            type: 'error',
+            message: `Linter error: ${node.name} - Linter timed out after 10 seconds`,
+            nodeId: node.id,
+            nodeName: node.name
+          });
+        }
       }
     }
 
     return errors;
-  }, [graph]);
+  }, [graph, updateNodeStatus, addConsoleLog]);
 
   // Function to fix a failed node using AI
   const fixFailedNode = useCallback(async (
@@ -254,6 +281,7 @@ export default function EditorPanel() {
             addConsoleLog({ type: 'error', message: error, nodeName });
           });
         });
+        setCurrentDeploymentType(null);
         return;
       }
 
