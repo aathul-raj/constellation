@@ -7,6 +7,7 @@ import Header from './Header';
 import EditorPanel from './EditorPanel';
 import AIChatPanel from './AIChatPanel';
 import NotificationCenter from './NotificationCenter';
+import AutoSave from './AutoSave';
 
 const GraphPanel = dynamic(() => import('./GraphPanel'), {
   ssr: false,
@@ -30,6 +31,11 @@ export default function Dashboard() {
   const [isDraggingLeft, setIsDraggingLeft] = useState(false);
   const [isDraggingRight, setIsDraggingRight] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Hydrate store from localStorage on mount
+  useEffect(() => {
+    useHPCStore.persist.rehydrate();
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -108,6 +114,7 @@ export default function Dashboard() {
         </div>
       </main>
       <NotificationCenter />
+      <AutoSave />
     </div>
   );
 }

@@ -144,6 +144,31 @@ body {
   color: var(--text-muted);
 }
 
+.save-status {
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.save-status.saving {
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+}
+
+.save-status.saved {
+  color: #34c759;
+  background: rgba(52, 199, 89, 0.1);
+}
+
+.save-status.error {
+  color: #ff3b30;
+  background: rgba(255, 59, 48, 0.1);
+}
+
 .header-center {
   display: flex;
   align-items: center;
@@ -204,6 +229,27 @@ body {
   color: var(--text-muted);
 }
 
+.projects-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.projects-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--accent-color);
+}
+
 .theme-toggle {
   display: flex;
   align-items: center;
@@ -221,6 +267,40 @@ body {
 .theme-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--border-color);
+}
+
+.logout-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.logout-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--accent-color);
 }
 
 .graph-panel-header {

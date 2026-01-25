@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 
 export type NodeStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -62,6 +63,9 @@ interface HPCStore {
   theme: 'dark' | 'light';
   chatMessages: ChatMessage[];
   notifications: Notification[];
+  currentProjectId: string | null;
+  currentProjectName: string | null;
+  saveStatus: 'idle' | 'saving' | 'saved' | 'error';
 
   // Actions
   setGraph: (graph: HPCGraph) => void;
@@ -81,6 +85,9 @@ interface HPCStore {
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
   addNotification: (notification: Omit<Notification, 'id' | 'timestamp'>) => void;
   removeNotification: (id: string) => void;
+  clearStore: () => void;
+  setCurrentProject: (projectId: string | null, projectName: string | null) => void;
+  setSaveStatus: (status: 'idle' | 'saving' | 'saved' | 'error') => void;
 }
 
 const initialGraph: HPCGraph = {
@@ -125,7 +132,9 @@ const initialGraph: HPCGraph = {
   ]
 };
 
-export const useHPCStore = create<HPCStore>((set, get) => ({
+export const useHPCStore = create<HPCStore>()(
+  persist(
+    (set, get) => ({
   graph: initialGraph,
   selectedNodeId: null,
   isRunning: false,
@@ -140,6 +149,9 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
     }
   ],
   notifications: [],
+  currentProjectId: null,
+  currentProjectName: null,
+  saveStatus: 'idle',
 
   setGraph: (graph) => set({ graph }),
 
@@ -256,5 +268,71 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
 
   removeNotification: (id) => set((state) => ({
     notifications: state.notifications.filter(n => n.id !== id)
-  }))
-}));
+  })),
+
+  clearStore: () => set({
+    graph: initialGraph,
+    selectedNodeId: null,
+    isRunning: false,
+    runProgress: 0,
+    chatMessages: [
+      {
+        id: '1',
+        role: 'assistant',
+        content: 'Constellation ready. Select a node to view its job script, modify the graph, or click "Run" to execute the pipeline.',
+        timestamp: new Date()
+      }
+    ],
+    notifications: [],
+    currentProjectId: null,
+    currentProjectName: null,
+    saveStatus: 'idle'
+  }),
+
+  setCurrentProject: (projectId, projectName) => set({
+    currentProjectId: projectId,
+    currentProjectName: projectName,
+    saveStatus: 'idle'
+  }),
+
+  setSaveStatus: (status) => set({ saveStatus: status })
+}),
+    {
+      name: 'hpc-storage',
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({
+        graph: state.graph,
+        selectedNodeId: state.selectedNodeId,
+        theme: state.theme,
+        chatMessages: state.chatMessages,
+        currentProjectId: state.currentProjectId,
+        currentProjectName: state.currentProjectName,
+      }),
+      version: 1,
+      // Custom merge to handle Date deserialization
+      merge: (persistedState: any, currentState: HPCStore) => {
+        const mergedState = {
+          ...currentState,
+          ...persistedState,
+        };
+
+        // Convert timestamp strings back to Date objects
+        if (mergedState.chatMessages) {
+          mergedState.chatMessages = mergedState.chatMessages.map((msg: any) => ({
+            ...msg,
+            timestamp: typeof msg.timestamp === 'string' ? new Date(msg.timestamp) : msg.timestamp,
+          }));
+        }
+
+        if (mergedState.notifications) {
+          mergedState.notifications = mergedState.notifications.map((notif: any) => ({
+            ...notif,
+            timestamp: typeof notif.timestamp === 'string' ? new Date(notif.timestamp) : notif.timestamp,
+          }));
+        }
+
+        return mergedState;
+      },
+    }
+  )
+);
