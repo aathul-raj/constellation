@@ -6,6 +6,7 @@ import { useHPCStore } from '../store/hpc-store';
 import type { AIResponse, NodeCreationIntent } from '../types/intent';
 import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
 import { fixGeneratedCode, extractInputParamName } from '../utils/code-fixer';
+import { nodeNameToParamName } from '../utils/signature-generator';
 
 export default function AIChatPanel() {
   const {
@@ -147,12 +148,8 @@ export default function AIChatPanel() {
             // Fix generated code if it's a compute node
             let fixedCode = validatedIntent.pythonCode;
             if (validatedIntent.nodeType === 'compute' && fixedCode && parentNode) {
-              // Determine input parameter name from parent node name
-              const inputParamName = parentNode.name
-                .toLowerCase()
-                .replace(/[^a-z0-9_]/g, '_')
-                .replace(/^_+|_+$/g, '');
-
+              // Use the same function that generates signatures to ensure consistency
+              const inputParamName = nodeNameToParamName(parentNode.name);
               fixedCode = fixGeneratedCode(fixedCode, inputParamName);
             }
 
@@ -232,14 +229,10 @@ export default function AIChatPanel() {
                 ? graph.nodes.find(n => n.id === targetNode.in[0])
                 : null;
 
-              let inputParamName = 'input';
-              if (parentNode) {
-                // Convert parent node name to valid Python identifier
-                inputParamName = parentNode.name
-                  .toLowerCase()
-                  .replace(/[^a-z0-9_]/g, '_')
-                  .replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
-              }
+              // Use the same function that generates signatures to ensure consistency
+              const inputParamName = parentNode
+                ? nodeNameToParamName(parentNode.name)
+                : 'input';
 
               // Apply code fixes
               fixedCode = fixGeneratedCode(data.code, inputParamName);

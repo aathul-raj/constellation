@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
-import { generateFunctionSignature } from '@/app/utils/signature-generator';
+import { generateFunctionSignature, nodeNameToParamName } from '@/app/utils/signature-generator';
 
 export async function POST(request: NextRequest) {
   try {
@@ -44,6 +44,14 @@ export async function POST(request: NextRequest) {
           ?.filter(Boolean)
       : [];
 
+    // Generate a mapping of all node names to their parameter names
+    // This helps the AI know what parameter to use when creating new nodes
+    const nodeParamMapping = graph?.nodes?.map((n: any) => ({
+      name: n.name,
+      paramName: nodeNameToParamName(n.name),
+      type: n.type
+    })) || [];
+
     const historyText = history
       ? `RECENT CHAT HISTORY:\n${history.map((h: any) => `${h.role.toUpperCase()}: ${h.content}`).join('\n')}\n`
       : '';
@@ -74,6 +82,17 @@ ${historyText}
 
 CURRENT PIPELINE STATE:
 ${graph ? JSON.stringify(graph, null, 2) : "No graph provided"}
+
+NODE PARAMETER REFERENCE (CRITICAL - use these exact parameter names in your code):
+${nodeParamMapping.map((n: any) => `- "${n.name}" → parameter name: "${n.paramName}" (${n.type})`).join('\n')}
+
+When writing code for a new compute node that connects FROM a parent node, the function signature will be:
+  def task(parent_param_name):  # where parent_param_name is from the table above
+
+Example: If creating a node that connects from "Post Processing", your code MUST use:
+  def task(post_processing):
+      out_df = post_processing.copy()  # Use the parameter name, NOT "in_df"!
+      ...
 
 ${selectedNode ? `SELECTED NODE:
 - ID: ${selectedNode.id}

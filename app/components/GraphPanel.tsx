@@ -391,9 +391,13 @@ export default function GraphPanel() {
   };
 
   useEffect(() => {
-    setTimeout(() => {
-      graphRef.current?.fitNodesInView();
-    }, 1000);
+    // Only fit nodes in view if there are actually nodes to display
+    // This prevents the camera from getting stuck when transitioning from empty to populated graph
+    if (nodes && nodes.length > 0) {
+      setTimeout(() => {
+        graphRef.current?.fitNodesInView();
+      }, 100);
+    }
   }, [nodes]);
 
   const customTheme = useMemo(() => ({
