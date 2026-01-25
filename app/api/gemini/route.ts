@@ -22,9 +22,9 @@ export async function POST(request: NextRequest) {
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     // Use standard model for simple tasks, more capable model for complex pipeline generation
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     // More capable model for pipeline generation (handles complex multi-node graphs better)
-    const pipelineModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const pipelineModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const selectedNode = selectedNodeId
       ? graph?.nodes?.find((n: { id: string }) => n.id === selectedNodeId)
