@@ -62,9 +62,11 @@ export default function EditorPanel() {
   const [inputFileContent, setInputFileContent] = useState<string | null>(null);
   const [loadingInputFile, setLoadingInputFile] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [currentDeploymentType, setCurrentDeploymentType] = useState<'local' | 'cloud' | null>(null);
   const [outputAnalysis, setOutputAnalysis] = useState<string | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisExpanded, setAnalysisExpanded] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   // Autopilot state - always enabled, AI automatically fixes errors
   const [isAutopilotActive, setIsAutopilotActive] = useState(false);
@@ -72,6 +74,7 @@ export default function EditorPanel() {
   const [autopilotMaxRetries] = useState(10);
   const [currentFixingNode, setCurrentFixingNode] = useState<string | null>(null);
   const stopAutopilotRef = useRef(false);
+  const autopilotRetryCountRef = useRef(0); // Ref for closure access
   const autopilotAbortController = useRef<AbortController | null>(null);
   const autopilotEndpointRef = useRef<string>('');
   const autopilotTitleRef = useRef<string>('');
@@ -255,6 +258,7 @@ export default function EditorPanel() {
       }
 
       setAutopilotRetryCount(0);
+      autopilotRetryCountRef.current = 0;
       stopAutopilotRef.current = false;
     }
 
@@ -334,6 +338,9 @@ export default function EditorPanel() {
                     errorMessage = data.message;
                     if (data.nodeId) {
                       failedNodeId = data.nodeId;
+                      console.log('[Autopilot] Error event received - nodeId:', data.nodeId, 'nodeName:', data.nodeName);
+                    } else {
+                      console.log('[Autopilot] Error event received WITHOUT nodeId - message:', data.message);
                     }
                     addConsoleLog({
                       type: 'error',
@@ -390,14 +397,15 @@ export default function EditorPanel() {
                     });
 
                     // Reset autopilot state on success
-                    if (autopilotRetryCount > 0) {
+                    if (autopilotRetryCountRef.current > 0) {
                       addChatMessage({
                         role: 'assistant',
-                        content: `Pipeline completed after ${autopilotRetryCount} fix${autopilotRetryCount === 1 ? '' : 'es'}.`
+                        content: `Pipeline completed after ${autopilotRetryCountRef.current} fix${autopilotRetryCountRef.current === 1 ? '' : 'es'}.`
                       });
                     }
                     setIsAutopilotActive(false);
                     setAutopilotRetryCount(0);
+                    autopilotRetryCountRef.current = 0;
                     setCurrentFixingNode(null);
                     setIsRunning(false);
                     break;
@@ -428,7 +436,8 @@ export default function EditorPanel() {
           return;
         }
 
-        if (autopilotRetryCount >= autopilotMaxRetries) {
+        // Use ref for accurate count in recursive calls
+        if (autopilotRetryCountRef.current >= autopilotMaxRetries) {
           addChatMessage({
             role: 'assistant',
             content: `Autopilot reached max attempts (${autopilotMaxRetries}). Manual fix required.`
@@ -441,6 +450,7 @@ export default function EditorPanel() {
           setIsRunning(false);
           setIsAutopilotActive(false);
           setAutopilotRetryCount(0);
+          autopilotRetryCountRef.current = 0;
           setCurrentFixingNode(null);
           return;
         }
@@ -450,7 +460,9 @@ export default function EditorPanel() {
 
         setIsAutopilotActive(true);
         setCurrentFixingNode(nodeName);
-        const currentAttempt = autopilotRetryCount + 1;
+        // Increment ref first, then update state for UI
+        autopilotRetryCountRef.current += 1;
+        const currentAttempt = autopilotRetryCountRef.current;
         setAutopilotRetryCount(currentAttempt);
 
         addChatMessage({
@@ -467,6 +479,7 @@ export default function EditorPanel() {
           stopAutopilotRef.current = false;
           setIsAutopilotActive(false);
           setAutopilotRetryCount(0);
+          autopilotRetryCountRef.current = 0;
           setCurrentFixingNode(null);
           addChatMessage({
             role: 'assistant',
@@ -477,8 +490,28 @@ export default function EditorPanel() {
         }
 
         if (fixResult.success && fixResult.fixedCode) {
-          // Apply the fix
+          console.log('[Autopilot] Applying fix to node:', failedNodeId, 'nodeName:', nodeName);
+          console.log('[Autopilot] Fixed code (first 200 chars):', fixResult.fixedCode.substring(0, 200));
+          
+          // Apply the fix to the store
           updateNodeCode(failedNodeId, fixResult.fixedCode);
+          
+          // Wait a tick to ensure Zustand store has updated
+          await new Promise(resolve => setTimeout(resolve, 50));
+          
+          // Verify the fix was applied
+          const verifyGraph = useHPCStore.getState().graph;
+          const verifyNode = verifyGraph.nodes.find(n => n.id === failedNodeId);
+          console.log('[Autopilot] Verified node code after update (first 200 chars):', verifyNode?.code?.substring(0, 200));
+          
+          // Check if the code actually changed
+          if (verifyNode?.code === fixResult.fixedCode) {
+            console.log('[Autopilot] ✓ Code successfully updated in store');
+          } else {
+            console.error('[Autopilot] ✗ Code update FAILED - store has different code!');
+            console.error('[Autopilot] Expected:', fixResult.fixedCode.substring(0, 100));
+            console.error('[Autopilot] Got:', verifyNode?.code?.substring(0, 100));
+          }
 
           addChatMessage({
             role: 'assistant',
@@ -488,8 +521,8 @@ export default function EditorPanel() {
           setCurrentFixingNode(null);
           setIsRunning(false);
 
-          // Small delay before retry
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          // Small delay before retry to let React update
+          await new Promise(resolve => setTimeout(resolve, 500));
 
           // Retry the deployment using stored endpoint
           await runWithAutopilot(autopilotEndpointRef.current, autopilotTitleRef.current, true);
@@ -500,6 +533,7 @@ export default function EditorPanel() {
           });
           setIsAutopilotActive(false);
           setAutopilotRetryCount(0);
+          autopilotRetryCountRef.current = 0;
           setCurrentFixingNode(null);
           setIsRunning(false);
         }
@@ -514,6 +548,7 @@ export default function EditorPanel() {
         });
         setIsAutopilotActive(false);
         setAutopilotRetryCount(0);
+        autopilotRetryCountRef.current = 0;
         setCurrentFixingNode(null);
       } else {
         const errMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -531,7 +566,7 @@ export default function EditorPanel() {
       setIsRunning(false);
     }
   }, [
-    isRunning, autopilotRetryCount, autopilotMaxRetries,
+    isRunning, autopilotMaxRetries,
     setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus,
     updateNodeCode, addNotification, updateNodeCsvData, clearNodeCsvData, removeNodeFile,
     addConsoleLog, clearConsoleLogs, addChatMessage, lintComputeNodes, fixFailedNode
@@ -542,6 +577,7 @@ export default function EditorPanel() {
     stopAutopilotRef.current = true;
     setIsAutopilotActive(false);
     setAutopilotRetryCount(0);
+    autopilotRetryCountRef.current = 0;
     setCurrentFixingNode(null);
     if (autopilotAbortController.current) {
       autopilotAbortController.current.abort();
@@ -552,7 +588,7 @@ export default function EditorPanel() {
     });
   }, [addChatMessage]);
 
-  const runStreamingDeployment = useCallback(async (endpoint: string, title: string) => {
+  const runStreamingDeployment = useCallback(async (endpoint: string, title: string, deploymentType: 'local' | 'cloud') => {
     if (isRunning) return;
 
     // Run pre-deployment lint check
@@ -579,6 +615,7 @@ export default function EditorPanel() {
     }
 
     setIsRunning(true);
+    setCurrentDeploymentType(deploymentType);
     setRunProgress(0);
     resetAllStatuses();
     clearConsoleLogs();
@@ -727,6 +764,7 @@ export default function EditorPanel() {
       });
     } finally {
       setIsRunning(false);
+      setCurrentDeploymentType(null);
     }
   }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
 
@@ -753,9 +791,12 @@ export default function EditorPanel() {
 
     const files = Array.from(e.target.files);
     setUploadingNodeId(selectedNodeId);
+    setUploadProgress(0);
 
     try {
-      for (const file of files) {
+      for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+        const file = files[fileIdx];
+        
         // Only accept CSV and ZIP files
         if (!file.name.endsWith('.csv') && !file.name.endsWith('.zip')) {
           addNotification({
@@ -766,84 +807,127 @@ export default function EditorPanel() {
           continue;
         }
 
-        // Upload to AWS
-        const uploadFormData = new FormData();
-        uploadFormData.append('file', file);
+        // Upload to AWS using XMLHttpRequest for progress tracking
+        const uploadStartTime = Date.now();
+        const uploadCompleteProgress = .7; // Cap upload at 70%
 
-        const uploadResponse = await fetch('/api/upload', {
-          method: 'POST',
-          body: uploadFormData
-        });
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          const uploadFormData = new FormData();
+          uploadFormData.append('file', file);
 
-        const uploadData = await uploadResponse.json();
-
-        if (uploadResponse.ok) {
-          // Check if this is a ZIP file response (multiple files) or single file
-          if (uploadData.files && Array.isArray(uploadData.files)) {
-            // ZIP file - multiple CSVs extracted
-            for (const uploadedFile of uploadData.files) {
-              // Analyze each CSV
-              const analyzeFormData = new FormData();
-
-              // Fetch the file from S3 to analyze it
-              const fileResponse = await fetch(`/api/files/${encodeURIComponent(uploadedFile.key)}`);
-              const fileBlob = await fileResponse.blob();
-              const csvFile = new File([fileBlob], uploadedFile.originalName, { type: 'text/csv' });
-
-              analyzeFormData.append('file', csvFile);
-
-              const analyzeResponse = await fetch('/api/analyze-file', {
-                method: 'POST',
-                body: analyzeFormData
-              });
-
-              const metadata = await analyzeResponse.json();
-
-              // Add file to the node's files array
-              addNodeFile(selectedNodeId, {
-                id: uploadedFile.key,
-                name: uploadedFile.originalName,
-                metadata: metadata
-              });
+          // Track upload progress (0-70%)
+          xhr.upload.addEventListener('progress', (e: ProgressEvent) => {
+            if (e.lengthComputable) {
+              const uploadPercent = (e.loaded / e.total) * 100;
+              // Scale to 0-70% and account for file index
+              const scaledProgress = (uploadPercent / files.length) * uploadCompleteProgress;
+              const fileOffsetProgress = (fileIdx / files.length) * uploadCompleteProgress;
+              setUploadProgress(Math.round(fileOffsetProgress + scaledProgress));
             }
-
-            addNotification({
-              type: 'success',
-              title: 'ZIP Extracted',
-              message: `${uploadData.count} CSV file(s) uploaded from ${file.name}`
-            });
-          } else {
-            // Single CSV file
-            const analyzeFormData = new FormData();
-            analyzeFormData.append('file', file);
-
-            const analyzeResponse = await fetch('/api/analyze-file', {
-              method: 'POST',
-              body: analyzeFormData
-            });
-
-            const metadata = await analyzeResponse.json();
-
-            // Add file to the node's files array
-            addNodeFile(selectedNodeId, {
-              id: uploadData.key,
-              name: file.name,
-              metadata: metadata
-            });
-
-            addNotification({
-              type: 'success',
-              title: 'File Uploaded',
-              message: `${file.name} uploaded to AWS successfully`
-            });
-          }
-        } else {
-          addNotification({
-            type: 'error',
-            title: 'Upload Failed',
-            message: uploadData.error || 'Failed to upload file'
           });
-        }
+
+          xhr.addEventListener('load', async () => {
+            if (xhr.status === 200) {
+              try {
+                const uploadData = JSON.parse(xhr.responseText);
+                
+                // Mark upload as complete, set to 70%
+                setUploadProgress(uploadCompleteProgress);
+
+                // Check if this is a ZIP file response (multiple files) or single file
+                if (uploadData.files && Array.isArray(uploadData.files)) {
+                  // ZIP file - multiple CSVs extracted
+                  const analysisStartTime = Date.now();
+                  
+                  for (let idx = 0; idx < uploadData.files.length; idx++) {
+                    const uploadedFile = uploadData.files[idx];
+                    
+                    // Estimate analysis progress (70-100%)
+                    const analysisFraction = (idx / uploadData.files.length) * 30;
+                    setUploadProgress(Math.round(uploadCompleteProgress + analysisFraction));
+
+                    // Analyze each CSV
+                    const analyzeFormData = new FormData();
+
+                    // Fetch the file from S3 to analyze it
+                    const fileResponse = await fetch(`/api/files/${encodeURIComponent(uploadedFile.key)}`);
+                    const fileBlob = await fileResponse.blob();
+                    const csvFile = new File([fileBlob], uploadedFile.originalName, { type: 'text/csv' });
+
+                    analyzeFormData.append('file', csvFile);
+
+                    const analyzeResponse = await fetch('/api/analyze-file', {
+                      method: 'POST',
+                      body: analyzeFormData
+                    });
+
+                    const metadata = await analyzeResponse.json();
+
+                    // Add file to the node's files array
+                    addNodeFile(selectedNodeId, {
+                      id: uploadedFile.key,
+                      name: uploadedFile.originalName,
+                      metadata: metadata
+                    });
+                  }
+
+                  addNotification({
+                    type: 'success',
+                    title: 'ZIP Extracted',
+                    message: `${uploadData.count} CSV file(s) uploaded from ${file.name}`
+                  });
+                } else {
+                  // Single CSV file
+                  setUploadProgress(Math.round(uploadCompleteProgress + 15)); // 85% during analysis
+                  
+                  const analyzeFormData = new FormData();
+                  analyzeFormData.append('file', file);
+
+                  const analyzeResponse = await fetch('/api/analyze-file', {
+                    method: 'POST',
+                    body: analyzeFormData
+                  });
+
+                  const metadata = await analyzeResponse.json();
+
+                  // Add file to the node's files array
+                  addNodeFile(selectedNodeId, {
+                    id: uploadData.key,
+                    name: file.name,
+                    metadata: metadata
+                  });
+
+                  addNotification({
+                    type: 'success',
+                    title: 'File Uploaded',
+                    message: `${file.name} uploaded to AWS successfully`
+                  });
+                }
+
+                // Complete this file's upload
+                setUploadProgress(Math.round(((fileIdx + 1) / files.length) * 100));
+                resolve();
+              } catch (error) {
+                reject(error);
+              }
+            } else {
+              try {
+                const uploadData = JSON.parse(xhr.responseText);
+                reject(new Error(uploadData.error || 'Failed to upload file'));
+              } catch {
+                reject(new Error('Upload failed'));
+              }
+            }
+          });
+
+          xhr.addEventListener('error', () => {
+            reject(new Error('Upload failed'));
+          });
+
+          xhr.open('POST', '/api/upload');
+          xhr.send(uploadFormData);
+        });
       }
     } catch (error) {
       addNotification({
@@ -853,6 +937,7 @@ export default function EditorPanel() {
       });
     } finally {
       setUploadingNodeId(null);
+      setUploadProgress(0);
       e.target.value = '';
     }
   }, [selectedNodeId, addNodeFile, addNotification]);
@@ -1211,19 +1296,35 @@ export default function EditorPanel() {
               {selectedNode.type === 'input-file' && (
                 <>
                   <div className="file-upload-section">
-                    <label className="file-upload-btn">
-                      <Upload size={14} />
-                      <span>Upload Files</span>
-                      <input
-                        type="file"
-                        accept=".csv,.zip"
-                        multiple
-                        onChange={handleFileUpload}
-                        disabled={uploadingNodeId === selectedNodeId}
-                        style={{ display: 'none' }}
-                      />
-                    </label>
-                    <span className="file-upload-hint">CSV or ZIP files</span>
+                    {uploadingNodeId === selectedNodeId ? (
+                      <div className="file-upload-progress">
+                        <div className="progress-bar-wrapper">
+                          <div className="progress-bar-background">
+                            <div 
+                              className="progress-bar-fill"
+                              style={{ width: `${uploadProgress}%` }}
+                            />
+                          </div>
+                          <span className="progress-text">Uploading...</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <label className="file-upload-btn">
+                          <Upload size={14} />
+                          <span>Upload Files</span>
+                          <input
+                            type="file"
+                            accept=".csv,.zip"
+                            multiple
+                            onChange={handleFileUpload}
+                            disabled={uploadingNodeId !== null}
+                            style={{ display: 'none' }}
+                          />
+                        </label>
+                        <span className="file-upload-hint">CSV or ZIP files</span>
+                      </>
+                    )}
                   </div>
                   {selectedNode.files && selectedNode.files.length > 0 && (
                     <div className="input-files-dropdown" ref={dropdownRef}>

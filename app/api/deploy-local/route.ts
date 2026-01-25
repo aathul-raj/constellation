@@ -300,20 +300,42 @@ export async function POST(request: NextRequest) {
               sendEvent('node-status', { nodeId, status: 'completed' });
             }
           } catch (error) {
-            // Mark failed nodes and collect error info
-            const failedNodes: string[] = [];
+            // Find the actual failed node from results
+            let actualFailedNodeId: string | null = null;
+            let actualFailedNodeName: string | null = null;
+            
             for (const nodeId of level) {
               const resultKey = `${nodeId}-0`;
               const result = nodeResults.get(resultKey);
-              if (!result || result.status !== 'completed') {
+              if (result && result.status === 'failed') {
+                actualFailedNodeId = nodeId;
+                actualFailedNodeName = (nodeMap.get(nodeId) as any)?.name || nodeId;
                 sendEvent('node-status', { nodeId, status: 'failed' });
-                const nodeName = (nodeMap.get(nodeId) as any)?.name || nodeId;
-                failedNodes.push(nodeName);
+                break; // Take the first failed node
               }
             }
+            
+            // If no specific failure found, mark all incomplete as failed
+            if (!actualFailedNodeId) {
+              for (const nodeId of level) {
+                const resultKey = `${nodeId}-0`;
+                const result = nodeResults.get(resultKey);
+                if (!result || result.status !== 'completed') {
+                  actualFailedNodeId = nodeId;
+                  actualFailedNodeName = (nodeMap.get(nodeId) as any)?.name || nodeId;
+                  sendEvent('node-status', { nodeId, status: 'failed' });
+                  break;
+                }
+              }
+            }
+            
             const errorMsg = error instanceof Error ? error.message : 'Execution failed';
-            const failedNodesMsg = failedNodes.length > 0 ? ` (${failedNodes.join(', ')})` : '';
-            sendEvent('error', { message: `${errorMsg}${failedNodesMsg}` });
+            // Send error with the actual failed nodeId so autopilot can fix it
+            sendEvent('error', { 
+              message: errorMsg,
+              nodeId: actualFailedNodeId,
+              nodeName: actualFailedNodeName
+            });
             controller.close();
             return;
           }
