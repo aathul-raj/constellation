@@ -2,8 +2,9 @@
 
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp, ChevronDown, FileText, X, Sparkles, Loader2 } from 'lucide-react';
+import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp, ChevronDown, FileText, X, Sparkles, Loader2, StopCircle, Zap } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
+import type { HPCGraph } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
 import { generateFunctionSignature } from '../utils/signature-generator';
 import CSVEditor from './CSVEditor';
@@ -27,6 +28,7 @@ interface DeploymentResult {
 export default function EditorPanel() {
   const {
     graph,
+    setGraph,
     selectedNodeId,
     updateNodeName,
     updateNodeCode,
@@ -44,7 +46,9 @@ export default function EditorPanel() {
     theme,
     addNotification,
     addConsoleLog,
-    clearConsoleLogs
+    clearConsoleLogs,
+    addChatMessage,
+    consoleLogs
   } = useHPCStore();
 
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
@@ -61,6 +65,17 @@ export default function EditorPanel() {
   const [outputAnalysis, setOutputAnalysis] = useState<string | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisExpanded, setAnalysisExpanded] = useState(false);
+
+  // Autopilot state - always enabled, AI automatically fixes errors
+  const [isAutopilotActive, setIsAutopilotActive] = useState(false);
+  const [autopilotRetryCount, setAutopilotRetryCount] = useState(0);
+  const [autopilotMaxRetries] = useState(10);
+  const [currentFixingNode, setCurrentFixingNode] = useState<string | null>(null);
+  const stopAutopilotRef = useRef(false);
+  const autopilotAbortController = useRef<AbortController | null>(null);
+  const autopilotEndpointRef = useRef<string>('');
+  const autopilotTitleRef = useRef<string>('');
+
   const consoleRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -149,6 +164,393 @@ export default function EditorPanel() {
 
     return errors;
   }, [graph]);
+
+  // Function to fix a failed node using AI
+  const fixFailedNode = useCallback(async (
+    failedNodeId: string,
+    errorMessage: string,
+    currentGraph: HPCGraph
+  ): Promise<{ success: boolean; fixedCode?: string; analysis?: string; fixDescription?: string }> => {
+    try {
+      const response = await fetch('/api/fix-pipeline-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          graph: currentGraph,
+          failedNodeId,
+          errorMessage,
+          consoleLogs: consoleLogs.filter(log => log.nodeId === failedNodeId || log.type === 'error'),
+          userGoal: currentGraph.description
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        return { success: false, analysis: errorData.error || 'Failed to get fix from AI' };
+      }
+
+      const data = await response.json();
+      return {
+        success: true,
+        fixedCode: data.fixedCode,
+        analysis: data.analysis,
+        fixDescription: data.fixDescription
+      };
+    } catch (error) {
+      return {
+        success: false,
+        analysis: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }, [consoleLogs]);
+
+  // Function to run deployment with Autopilot - AI automatically fixes errors
+  const runWithAutopilot = useCallback(async (endpoint: string, title: string, isRetry: boolean = false) => {
+    if (isRunning && !isRetry) return;
+    
+    // Check if stop was requested
+    if (stopAutopilotRef.current) {
+      stopAutopilotRef.current = false;
+      setIsAutopilotActive(false);
+      setAutopilotRetryCount(0);
+      setCurrentFixingNode(null);
+      addChatMessage({
+        role: 'assistant',
+        content: 'Autopilot stopped.'
+      });
+      return;
+    }
+
+    // Abort controller for cancellation
+    autopilotAbortController.current = new AbortController();
+    
+    // Store endpoint/title for retries
+    if (!isRetry) {
+      autopilotEndpointRef.current = endpoint;
+      autopilotTitleRef.current = title;
+    }
+
+    if (!isRetry) {
+      // Run pre-deployment lint check
+      const lintErrors = await lintComputeNodes();
+
+      if (lintErrors.length > 0) {
+        const errorMessages = lintErrors.map(({ nodeName, errors }) =>
+          `**${nodeName}**: ${errors.join('; ')}`
+        ).join('\n\n');
+
+        addNotification({
+          type: 'error',
+          title: 'Syntax Errors Detected',
+          message: `Please fix the following errors before running:\n\n${errorMessages}`
+        });
+
+        clearConsoleLogs();
+        lintErrors.forEach(({ nodeName, errors }) => {
+          errors.forEach(error => {
+            addConsoleLog({ type: 'error', message: error, nodeName });
+          });
+        });
+        return;
+      }
+
+      setAutopilotRetryCount(0);
+      stopAutopilotRef.current = false;
+    }
+
+    setIsRunning(true);
+    setRunProgress(0);
+    if (!isRetry) {
+      resetAllStatuses();
+      clearConsoleLogs();
+    }
+
+    // IMPORTANT: Get fresh graph from store to include any fixes applied
+    const currentGraph = useHPCStore.getState().graph;
+    const computeNodeIds = currentGraph.nodes.filter(n => n.type === 'compute').map(n => n.id);
+    let completedNodes = 0;
+    let failedNodeId: string | null = null;
+    let errorMessage: string | null = null;
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graph: currentGraph }),
+        signal: autopilotAbortController.current?.signal
+      });
+
+      if (!response.body) {
+        throw new Error('No response body');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let deploymentSucceeded = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        let eventData = '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7);
+          } else if (line.startsWith('data: ')) {
+            eventData = line.slice(6);
+
+            if (eventType && eventData) {
+              try {
+                const data = JSON.parse(eventData);
+
+                switch (eventType) {
+                  case 'node-status':
+                    updateNodeStatus(data.nodeId, data.status);
+                    if (data.status === 'completed') {
+                      completedNodes++;
+                      setRunProgress((completedNodes / computeNodeIds.length) * 100);
+                    } else if (data.status === 'failed') {
+                      failedNodeId = data.nodeId;
+                    }
+                    break;
+
+                  case 'log':
+                    addConsoleLog({
+                      type: data.type || 'info',
+                      message: data.message,
+                      nodeId: data.nodeId,
+                      nodeName: data.nodeName
+                    });
+                    break;
+
+                  case 'error':
+                    errorMessage = data.message;
+                    if (data.nodeId) {
+                      failedNodeId = data.nodeId;
+                    }
+                    addConsoleLog({
+                      type: 'error',
+                      message: data.message,
+                      nodeId: data.nodeId,
+                      nodeName: data.nodeName
+                    });
+                    break;
+
+                  case 'complete':
+                    deploymentSucceeded = true;
+                    // Handle output file updates
+                    const outputNodeUpdates = data.outputNodeUpdates || [];
+                    const updatesByNode = new Map<string, typeof outputNodeUpdates>();
+
+                    for (const update of outputNodeUpdates) {
+                      if (!updatesByNode.has(update.nodeId)) {
+                        updatesByNode.set(update.nodeId, []);
+                      }
+                      updatesByNode.get(update.nodeId)!.push(update);
+                    }
+
+                    for (const [nodeId, updates] of updatesByNode) {
+                      clearNodeCsvData(nodeId);
+                      const outputNode = graph.nodes.find(n => n.id === nodeId);
+                      const existingFileIds = outputNode?.files?.map(f => f.id) || [];
+                      existingFileIds.forEach(fileId => removeNodeFile(nodeId, fileId));
+
+                      if ((window as any).__outputFiles?.[nodeId]) {
+                        delete (window as any).__outputFiles[nodeId];
+                        localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+                      }
+                      setSelectedOutputFileIndex(0);
+
+                      const csvContent = updates[0].csvContent;
+                      if (csvContent) {
+                        updateNodeCsvData(nodeId, csvContent, updates[0].fileName || 'output.csv');
+
+                        if (updates.length > 1) {
+                          (window as any).__outputFiles = (window as any).__outputFiles || {};
+                          (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
+                            fileName: u.fileName,
+                            content: u.csvContent
+                          }));
+                          localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+                        }
+                      }
+                    }
+
+                    addNotification({
+                      type: 'success',
+                      title: title,
+                      message: `Deployment completed successfully`
+                    });
+
+                    // Reset autopilot state on success
+                    if (autopilotRetryCount > 0) {
+                      addChatMessage({
+                        role: 'assistant',
+                        content: `Pipeline completed after ${autopilotRetryCount} fix${autopilotRetryCount === 1 ? '' : 'es'}.`
+                      });
+                    }
+                    setIsAutopilotActive(false);
+                    setAutopilotRetryCount(0);
+                    setCurrentFixingNode(null);
+                    setIsRunning(false);
+                    break;
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE data:', e);
+              }
+              eventType = '';
+              eventData = '';
+            }
+          }
+        }
+      }
+
+      // Autopilot: If deployment failed, automatically analyze and fix
+      if (!deploymentSucceeded && failedNodeId && errorMessage) {
+        // Check stop flag
+        if (stopAutopilotRef.current) {
+          stopAutopilotRef.current = false;
+          setIsAutopilotActive(false);
+          setAutopilotRetryCount(0);
+          setCurrentFixingNode(null);
+          addChatMessage({
+            role: 'assistant',
+            content: 'Autopilot stopped.'
+          });
+          setIsRunning(false);
+          return;
+        }
+
+        if (autopilotRetryCount >= autopilotMaxRetries) {
+          addChatMessage({
+            role: 'assistant',
+            content: `Autopilot reached max attempts (${autopilotMaxRetries}). Manual fix required.`
+          });
+          addNotification({
+            type: 'error',
+            title: 'Autopilot Stopped',
+            message: `Could not fix after ${autopilotMaxRetries} attempts`
+          });
+          setIsRunning(false);
+          setIsAutopilotActive(false);
+          setAutopilotRetryCount(0);
+          setCurrentFixingNode(null);
+          return;
+        }
+
+        const failedNode = currentGraph.nodes.find(n => n.id === failedNodeId);
+        const nodeName = failedNode?.name || failedNodeId;
+
+        setIsAutopilotActive(true);
+        setCurrentFixingNode(nodeName);
+        const currentAttempt = autopilotRetryCount + 1;
+        setAutopilotRetryCount(currentAttempt);
+
+        addChatMessage({
+          role: 'assistant',
+          content: `**Autopilot** fixing \`${nodeName}\`\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\n(Attempt ${currentAttempt}/${autopilotMaxRetries})`
+        });
+
+        // Call the fix API - use fresh graph from store in case code was already updated
+        const freshGraph = useHPCStore.getState().graph;
+        const fixResult = await fixFailedNode(failedNodeId, errorMessage, freshGraph);
+
+        // Check stop flag again after API call
+        if (stopAutopilotRef.current) {
+          stopAutopilotRef.current = false;
+          setIsAutopilotActive(false);
+          setAutopilotRetryCount(0);
+          setCurrentFixingNode(null);
+          addChatMessage({
+            role: 'assistant',
+            content: 'Autopilot stopped.'
+          });
+          setIsRunning(false);
+          return;
+        }
+
+        if (fixResult.success && fixResult.fixedCode) {
+          // Apply the fix
+          updateNodeCode(failedNodeId, fixResult.fixedCode);
+
+          addChatMessage({
+            role: 'assistant',
+            content: `**Fixed** \`${nodeName}\`\n\n${fixResult.analysis}${fixResult.fixDescription ? `\n\n${fixResult.fixDescription}` : ''}\n\nRetrying deployment...`
+          });
+
+          setCurrentFixingNode(null);
+          setIsRunning(false);
+
+          // Small delay before retry
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Retry the deployment using stored endpoint
+          await runWithAutopilot(autopilotEndpointRef.current, autopilotTitleRef.current, true);
+        } else {
+          addChatMessage({
+            role: 'assistant',
+            content: `Could not fix \`${nodeName}\` automatically.\n\n${fixResult.analysis || 'Unable to determine fix.'}\n\nPlease fix manually.`
+          });
+          setIsAutopilotActive(false);
+          setAutopilotRetryCount(0);
+          setCurrentFixingNode(null);
+          setIsRunning(false);
+        }
+        return;
+      }
+
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        addChatMessage({
+          role: 'assistant',
+          content: 'Deployment cancelled.'
+        });
+        setIsAutopilotActive(false);
+        setAutopilotRetryCount(0);
+        setCurrentFixingNode(null);
+      } else {
+        const errMsg = error instanceof Error ? error.message : 'Unknown error';
+        computeNodeIds.forEach(nodeId => updateNodeStatus(nodeId, 'failed'));
+        addConsoleLog({
+          type: 'error',
+          message: `Execution error: ${errMsg}`
+        });
+        addNotification({
+          type: 'error',
+          title: 'Execution Error',
+          message: errMsg
+        });
+      }
+      setIsRunning(false);
+    }
+  }, [
+    isRunning, autopilotRetryCount, autopilotMaxRetries,
+    setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus,
+    updateNodeCode, addNotification, updateNodeCsvData, clearNodeCsvData, removeNodeFile,
+    addConsoleLog, clearConsoleLogs, addChatMessage, lintComputeNodes, fixFailedNode
+  ]);
+
+  // Stop Autopilot handler
+  const handleStopAutopilot = useCallback(() => {
+    stopAutopilotRef.current = true;
+    setIsAutopilotActive(false);
+    setAutopilotRetryCount(0);
+    setCurrentFixingNode(null);
+    if (autopilotAbortController.current) {
+      autopilotAbortController.current.abort();
+    }
+    addChatMessage({
+      role: 'assistant',
+      content: 'Autopilot stopped by user.'
+    });
+  }, [addChatMessage]);
 
   const runStreamingDeployment = useCallback(async (endpoint: string, title: string) => {
     if (isRunning) return;
@@ -329,12 +731,12 @@ export default function EditorPanel() {
   }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
 
   const handleRun = useCallback(async () => {
-    await runStreamingDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
-  }, [runStreamingDeployment]);
+    await runWithAutopilot('/api/deploy-batch', 'Pipeline Executed (AWS)');
+  }, [runWithAutopilot]);
 
   const handleRunLocal = useCallback(async () => {
-    await runStreamingDeployment('/api/deploy-local', 'Local Test Complete');
-  }, [runStreamingDeployment]);
+    await runWithAutopilot('/api/deploy-local', 'Local Test Complete');
+  }, [runWithAutopilot]);
 
   const handleReset = useCallback(() => {
     resetAllStatuses();
@@ -1220,7 +1622,7 @@ export default function EditorPanel() {
             title="Test your scripts locally before deploying to cloud"
           >
             <Play size={16} />
-            {isRunning ? 'Testing...' : 'Test Pipeline'}
+            {isRunning && !isAutopilotActive ? 'Testing...' : 'Test Pipeline'}
           </button>
           <button
             className={`btn btn-primary ${isRunning ? 'running' : ''}`}
@@ -1229,10 +1631,36 @@ export default function EditorPanel() {
             title="Deploy and run on distributed cloud compute clusters"
           >
             <Play size={16} />
-            {isRunning ? 'Deploying...' : 'Deploy to Cloud'}
+            {isRunning && !isAutopilotActive ? 'Deploying...' : 'Deploy to Cloud'}
           </button>
         </div>
       </div>
+
+      {/* Autopilot Toast - floating notification */}
+      {isAutopilotActive && (
+        <div className="autopilot-toast">
+          <div className="autopilot-toast-content">
+            <div className="autopilot-toast-header">
+              <Zap size={16} className="autopilot-icon" />
+              <span className="autopilot-toast-title">Autopilot Active</span>
+              <span className="autopilot-toast-count">Attempt {autopilotRetryCount}/{autopilotMaxRetries}</span>
+            </div>
+            {currentFixingNode && (
+              <div className="autopilot-toast-status">
+                <Loader2 size={14} className="loading-spinner" />
+                <span>Fixing {currentFixingNode}...</span>
+              </div>
+            )}
+            <button
+              className="autopilot-toast-stop"
+              onClick={handleStopAutopilot}
+            >
+              <StopCircle size={14} />
+              Stop
+            </button>
+          </div>
+        </div>
+      )}
 
     </div>
   );
