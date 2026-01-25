@@ -60,6 +60,15 @@ export interface Notification {
   timestamp: Date;
 }
 
+export interface ConsoleLog {
+  id: string;
+  type: 'info' | 'error' | 'success' | 'warning';
+  message: string;
+  timestamp: Date;
+  nodeId?: string;
+  nodeName?: string;
+}
+
 interface HPCStore {
   graph: HPCGraph;
   selectedNodeId: string | null;
@@ -68,6 +77,8 @@ interface HPCStore {
   theme: 'dark' | 'light';
   chatMessages: ChatMessage[];
   notifications: Notification[];
+  consoleLogs: ConsoleLog[];
+  hasConsoleError: boolean;
   currentProjectId: string | null;
   currentProjectName: string | null;
   saveStatus: 'idle' | 'saving' | 'saved' | 'error';
@@ -96,6 +107,9 @@ interface HPCStore {
   setChatMessages: (messages: ChatMessage[]) => void;
   addNotification: (notification: Omit<Notification, 'id' | 'timestamp'>) => void;
   removeNotification: (id: string) => void;
+  addConsoleLog: (log: Omit<ConsoleLog, 'id' | 'timestamp'>) => void;
+  clearConsoleLogs: () => void;
+  setHasConsoleError: (hasError: boolean) => void;
   clearStore: () => void;
   setCurrentProject: (projectId: string | null, projectName: string | null) => void;
   setSaveStatus: (status: 'idle' | 'saving' | 'saved' | 'error') => void;
@@ -162,6 +176,8 @@ export const useHPCStore = create<HPCStore>()(
     }
   ],
   notifications: [],
+  consoleLogs: [],
+  hasConsoleError: false,
   currentProjectId: null,
   currentProjectName: null,
   saveStatus: 'idle',
@@ -466,6 +482,25 @@ export const useHPCStore = create<HPCStore>()(
     notifications: state.notifications.filter(n => n.id !== id)
   })),
 
+  addConsoleLog: (log) => set((state) => ({
+    consoleLogs: [
+      ...state.consoleLogs,
+      {
+        ...log,
+        id: crypto.randomUUID(),
+        timestamp: new Date()
+      }
+    ]
+  })),
+
+  clearConsoleLogs: () => set({
+    consoleLogs: []
+  }),
+
+  setHasConsoleError: (hasError) => set({
+    hasConsoleError: hasError
+  }),
+
   clearStore: () => set({
     graph: initialGraph,
     selectedNodeId: null,
@@ -480,6 +515,8 @@ export const useHPCStore = create<HPCStore>()(
       }
     ],
     notifications: [],
+    consoleLogs: [],
+    hasConsoleError: false,
     currentProjectId: null,
     currentProjectName: null,
     saveStatus: 'idle'

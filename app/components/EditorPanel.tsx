@@ -42,7 +42,11 @@ export default function EditorPanel() {
     runProgress,
     setRunProgress,
     theme,
-    addNotification
+    addNotification,
+    addConsoleLog,
+    clearConsoleLogs,
+    hasConsoleError,
+    setHasConsoleError
   } = useHPCStore();
 
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
@@ -106,6 +110,13 @@ export default function EditorPanel() {
     setIsRunning(true);
     setRunProgress(0);
     resetAllStatuses();
+    clearConsoleLogs();
+    setHasConsoleError(false);
+
+    addConsoleLog({
+      type: 'info',
+      message: `Starting deployment...`
+    });
 
     try {
       const response = await fetch(endpoint, {
@@ -117,22 +128,22 @@ export default function EditorPanel() {
       const deployResult = await response.json();
 
       if (!response.ok) {
-        addNotification({
+        addConsoleLog({
           type: 'error',
-          title: 'Deployment Failed',
-          message: deployResult.message || 'Failed to deploy pipeline'
+          message: `Deployment failed: ${deployResult.message || 'Failed to deploy pipeline'}`
         });
+        setHasConsoleError(true);
         setIsRunning(false);
         return;
       }
 
       // Verify deployment completed successfully
       if (deployResult.status !== 'completed') {
-        addNotification({
+        addConsoleLog({
           type: 'error',
-          title: 'Deployment Error',
-          message: deployResult.message || 'Deployment failed to complete'
+          message: `Deployment error: ${deployResult.message || 'Deployment failed to complete'}`
         });
+        setHasConsoleError(true);
         setIsRunning(false);
         return;
       }
@@ -193,21 +204,45 @@ export default function EditorPanel() {
         }
       }
 
+      // Add console logs from deployment result
+      const consoleLogs = deployResult.consoleLogs || [];
+      let hasError = false;
+      consoleLogs.forEach((log: any) => {
+        addConsoleLog({
+          type: log.type || 'info',
+          message: log.message,
+          nodeId: log.nodeId,
+          nodeName: log.nodeName
+        });
+        if (log.type === 'error') {
+          hasError = true;
+        }
+      });
+
+      if (hasError) {
+        setHasConsoleError(true);
+      }
+
+      addConsoleLog({
+        type: 'success',
+        message: `Deployment completed successfully`
+      });
+
       addNotification({
         type: 'success',
         title: title,
         message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
       });
     } catch (error) {
-      addNotification({
+      addConsoleLog({
         type: 'error',
-        title: 'Execution Error',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: `Execution error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`
       });
+      setHasConsoleError(true);
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addConsoleLog, clearConsoleLogs, setHasConsoleError]);
 
   const handleRun = useCallback(async () => {
     await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
@@ -788,11 +823,15 @@ export default function EditorPanel() {
         <div className="footer-actions">
           {!consoleOpen && (
             <button
-              className="btn btn-console"
-              onClick={() => setConsoleOpen(true)}
+              className={`btn btn-console ${hasConsoleError ? 'error' : ''}`}
+              onClick={() => {
+                setConsoleOpen(true);
+                setHasConsoleError(false);
+              }}
             >
               <ChevronUp size={16} />
               Debug Console
+              {hasConsoleError && <span className="error-badge">!</span>}
             </button>
           )}
           <button
