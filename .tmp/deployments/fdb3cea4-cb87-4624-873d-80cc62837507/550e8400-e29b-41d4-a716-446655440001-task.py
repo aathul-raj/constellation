@@ -1,26 +1,6 @@
-import { HPCNode, HPCGraph } from '@/app/store/hpc-store';
-
-/**
- * Sanitize a node ID to be a valid Python variable name
- */
-function sanitizeNodeId(nodeId: string): string {
-  return nodeId.replace(/-/g, '_');
-}
-
-/**
- * Create a complete executable Python script from a compute node
- *
- * Generates a universal script that:
- * - Tries to read from local filesystem first
- * - Falls back to S3 if local files don't exist
- * - Works for both local and AWS Batch execution
- */
-export function createExecutableScript(node: HPCNode, graph: HPCGraph): string {
-  const upstreamNodes = graph.nodes.filter((n) => node.in.includes(n.id));
-
-  let script = `#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Auto-generated task script for: ${node.name}
+Auto-generated task script for: Process Data
 Universal script - works for both local and AWS execution
 """
 
@@ -33,7 +13,7 @@ from io import StringIO
 
 # Configuration from environment variables
 BUCKET_NAME = os.environ.get('BUCKET_NAME', 'hpc-bucket')
-OUTPUT_PATH = os.environ.get('OUTPUT_PATH', '${node.id}/output.csv')
+OUTPUT_PATH = os.environ.get('OUTPUT_PATH', '550e8400-e29b-41d4-a716-446655440001/output.csv')
 
 # Try to import boto3 for S3 access (optional for local execution)
 try:
@@ -70,38 +50,25 @@ def read_csv_smart(path):
 
     raise Exception(f"Could not read {path} - file not found locally and S3 not available")
 
-${node.code}
+def task(input_data):  # do not edit this method header
+    import numpy as np
+    import pandas as pd
+
+    df = input_data.copy()
+    df["row_number"] = np.arange(1, len(df) + 1)
+    return df
+
+
 
 if __name__ == "__main__":
     try:
-`;
+        # Load Input Data from local file or S3
+        input_path_550e8400_e29b_41d4_a716_446655440000 = os.environ.get('INPUT_550e8400-e29b-41d4-a716-446655440000', '550e8400-e29b-41d4-a716-446655440000/output.csv')
+        input_data = read_csv_smart(input_path_550e8400_e29b_41d4_a716_446655440000)
 
-  // Load inputs
-  if (upstreamNodes.length === 0) {
-    script += `        # No inputs, call function directly
-        result = task()
-`;
-  } else {
-    upstreamNodes.forEach((upstream) => {
-      const paramName = upstream.name.toLowerCase().replace(/[^a-z0-9]/g, '_');
-      const envVarName = `INPUT_${upstream.id}`;
-      const sanitizedId = sanitizeNodeId(upstream.id);
-      script += `        # Load ${upstream.name} from local file or S3
-        input_path_${sanitizedId} = os.environ.get('${envVarName}', '${upstream.id}/output.csv')
-        ${paramName} = read_csv_smart(input_path_${sanitizedId})
-`;
-    });
-
-    const params = upstreamNodes
-      .map((n) => n.name.toLowerCase().replace(/[^a-z0-9]/g, '_'))
-      .join(', ');
-    script += `
         # Call task function with inputs
-        result = task(${params})
-`;
-  }
+        result = task(input_data)
 
-  script += `
         # Write output to local file or S3
         if os.path.dirname(OUTPUT_PATH):
             os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
@@ -137,7 +104,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-`;
-
-  return script;
-}

@@ -98,7 +98,7 @@ export default function EditorPanel() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const handleRun = useCallback(async () => {
+  const runDeployment = useCallback(async (endpoint: string, title: string) => {
     if (isRunning) return;
 
     setIsRunning(true);
@@ -106,54 +106,70 @@ export default function EditorPanel() {
     resetAllStatuses();
 
     try {
-      // Deploy to backend
-      const response = await fetch('/api/deploy-batch', {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ graph })
       });
 
-      const deployResult: DeploymentResult = await response.json();
+      const deployResult = await response.json();
 
       if (!response.ok) {
         addNotification({
           type: 'error',
           title: 'Deployment Failed',
-          message: 'Failed to deploy pipeline'
+          message: deployResult.message || 'Failed to deploy pipeline'
         });
         setIsRunning(false);
         return;
       }
 
-      // Update node statuses based on deployment result
-      const levels = getExecutionLevels(graph);
-      const totalNodes = graph.nodes.length;
-      let completedNodes = 0;
+      // Verify deployment completed successfully
+      if (deployResult.status !== 'completed') {
+        addNotification({
+          type: 'error',
+          title: 'Deployment Error',
+          message: deployResult.message || 'Deployment failed to complete'
+        });
+        setIsRunning(false);
+        return;
+      }
 
-      for (const level of levels) {
-        // Set all nodes in this level to running
-        for (const nodeId of level) {
-          updateNodeStatus(nodeId, 'running');
-        }
+      // Update node statuses from the deployment result
+      const computeNodes = deployResult.nodes || [];
+      const computeNodeCount = graph.nodes.filter(n => n.type === 'compute').length;
 
-        // Simulate execution time (500ms per level)
-        await sleep(500);
+      computeNodes.forEach((nodeResult: any, index: number) => {
+        updateNodeStatus(nodeResult.id, nodeResult.status);
+        setRunProgress(((index + 1) / computeNodeCount) * 100);
+      });
 
-        // Complete all nodes in this level
-        for (const nodeId of level) {
-          const nodeResult = deployResult.nodes.find(n => n.id === nodeId);
-          if (nodeResult?.outputFileId) {
-            updateNodeFile(nodeId, nodeResult.outputFileId);
+      // Handle output file updates for output-file nodes
+      const outputNodeUpdates = deployResult.outputNodeUpdates || [];
+
+      for (const update of outputNodeUpdates) {
+        if (update.csvContent) {
+          // Local deployment: CSV content is directly provided
+          updateNodeCsvData(update.nodeId, update.csvContent, `output-${Date.now()}.csv`);
+        } else if (update.s3Key) {
+          // AWS deployment: Fetch from S3
+          try {
+            const fileResponse = await fetch(`/api/files/${encodeURIComponent(update.s3Key)}`);
+            if (fileResponse.ok) {
+              const buffer = await fileResponse.arrayBuffer();
+              const decoder = new TextDecoder();
+              const csvContent = decoder.decode(buffer);
+              updateNodeCsvData(update.nodeId, csvContent, `output-${Date.now()}.csv`);
+            }
+          } catch (error) {
+            console.error(`Failed to fetch output file ${update.s3Key}:`, error);
           }
-          updateNodeStatus(nodeId, 'completed');
-          completedNodes++;
-          setRunProgress((completedNodes / totalNodes) * 100);
         }
       }
 
       addNotification({
         type: 'success',
-        title: 'Pipeline Executed',
+        title: title,
         message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
       });
     } catch (error) {
@@ -165,7 +181,15 @@ export default function EditorPanel() {
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, updateNodeFile, addNotification]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification]);
+
+  const handleRun = useCallback(async () => {
+    await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
+  }, [runDeployment]);
+
+  const handleRunLocal = useCallback(async () => {
+    await runDeployment('/api/deploy-local', 'Pipeline Executed (Local)');
+  }, [runDeployment]);
 
   const handleReset = useCallback(() => {
     resetAllStatuses();
@@ -618,12 +642,22 @@ export default function EditorPanel() {
             Reset
           </button>
           <button
+            className={`btn btn-secondary ${isRunning ? 'running' : ''}`}
+            onClick={handleRunLocal}
+            disabled={isRunning}
+            title="Run locally on this machine (requires Python 3)"
+          >
+            <Play size={16} />
+            {isRunning ? 'Running...' : 'Run Locally'}
+          </button>
+          <button
             className={`btn btn-primary ${isRunning ? 'running' : ''}`}
             onClick={handleRun}
             disabled={isRunning}
+            title="Run on AWS Batch"
           >
             <Play size={16} />
-            {isRunning ? 'Running...' : 'Run'}
+            {isRunning ? 'Running...' : 'Run on AWS'}
           </button>
         </div>
       </div>
