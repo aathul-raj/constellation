@@ -150,15 +150,14 @@ export default function EditorPanel() {
     return errors;
   }, [graph]);
 
-  const runDeployment = useCallback(async (endpoint: string, title: string) => {
+  const runStreamingDeployment = useCallback(async (endpoint: string, title: string) => {
     if (isRunning) return;
 
     // Run pre-deployment lint check
     const lintErrors = await lintComputeNodes();
-    
+
     if (lintErrors.length > 0) {
-      // Display syntax errors to user
-      const errorMessages = lintErrors.map(({ nodeName, errors }) => 
+      const errorMessages = lintErrors.map(({ nodeName, errors }) =>
         `**${nodeName}**: ${errors.join('; ')}`
       ).join('\n\n');
 
@@ -168,18 +167,12 @@ export default function EditorPanel() {
         message: `Please fix the following errors before running:\n\n${errorMessages}`
       });
 
-      // Also add to console logs
       clearConsoleLogs();
       lintErrors.forEach(({ nodeName, errors }) => {
         errors.forEach(error => {
-          addConsoleLog({
-            type: 'error',
-            message: error,
-            nodeName: nodeName
-          });
+          addConsoleLog({ type: 'error', message: error, nodeName });
         });
       });
-
       return;
     }
 
@@ -188,6 +181,9 @@ export default function EditorPanel() {
     resetAllStatuses();
     clearConsoleLogs();
 
+    const computeNodeIds = graph.nodes.filter(n => n.type === 'compute').map(n => n.id);
+    let completedNodes = 0;
+
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -195,164 +191,150 @@ export default function EditorPanel() {
         body: JSON.stringify({ graph })
       });
 
-      const deployResult = await response.json();
-
-      // Process console logs if available (even on error)
-      if (deployResult.consoleLogs && Array.isArray(deployResult.consoleLogs)) {
-        deployResult.consoleLogs.forEach((log: any) => {
-          addConsoleLog({
-            type: log.type || 'info',
-            message: log.message,
-            nodeId: log.nodeId,
-            nodeName: log.nodeName
-          });
-        });
+      if (!response.body) {
+        throw new Error('No response body');
       }
 
-      if (!response.ok) {
-        addNotification({
-          type: 'error',
-          title: 'Deployment Failed',
-          message: deployResult.message || 'Failed to deploy pipeline'
-        });
-        setIsRunning(false);
-        return;
-      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      // Verify deployment completed successfully
-      if (deployResult.status !== 'completed') {
-        addNotification({
-          type: 'error',
-          title: 'Deployment Error',
-          message: deployResult.message || 'Deployment failed to complete'
-        });
-        setIsRunning(false);
-        return;
-      }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      // Update node statuses from the deployment result
-      const computeNodes = deployResult.nodes || [];
-      const computeNodeCount = graph.nodes.filter(n => n.type === 'compute').length;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      computeNodes.forEach((nodeResult: any, index: number) => {
-        // Use nodeId if available (parallel execution), otherwise use id
-        const actualNodeId = nodeResult.nodeId || nodeResult.id;
-        updateNodeStatus(actualNodeId, nodeResult.status);
-        setRunProgress(((index + 1) / computeNodeCount) * 100);
-      });
+        let eventType = '';
+        let eventData = '';
 
-      // Handle output file updates for output-file nodes
-      const outputNodeUpdates = deployResult.outputNodeUpdates || [];
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7);
+          } else if (line.startsWith('data: ')) {
+            eventData = line.slice(6);
 
-      // Group updates by nodeId to handle multiple files per node
-      const updatesByNode = new Map<string, typeof outputNodeUpdates>();
-      for (const update of outputNodeUpdates) {
-        if (!updatesByNode.has(update.nodeId)) {
-          updatesByNode.set(update.nodeId, []);
-        }
-        updatesByNode.get(update.nodeId)!.push(update);
-      }
+            if (eventType && eventData) {
+              try {
+                const data = JSON.parse(eventData);
 
-      // Process each output node
-      for (const [nodeId, updates] of updatesByNode) {
-        // Clear existing output data first to avoid stale files showing
-        clearNodeCsvData(nodeId);
-        // Clear existing files from the node (copy array to avoid mutation during iteration)
-        const outputNode = graph.nodes.find(n => n.id === nodeId);
-        const existingFileIds = outputNode?.files?.map(f => f.id) || [];
-        existingFileIds.forEach(fileId => removeNodeFile(nodeId, fileId));
-        // Clear window cache for this node
-        if ((window as any).__outputFiles?.[nodeId]) {
-          delete (window as any).__outputFiles[nodeId];
-          // Persist the update to localStorage
-          localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
-        }
-        // Reset output file viewer index
-        setSelectedOutputFileIndex(0);
+                switch (eventType) {
+                  case 'node-status':
+                    updateNodeStatus(data.nodeId, data.status);
+                    if (data.status === 'completed') {
+                      completedNodes++;
+                      setRunProgress((completedNodes / computeNodeIds.length) * 100);
+                    }
+                    break;
 
-        if (updates[0].s3Key) {
-          // AWS deployment - fetch S3 files and store content (same as local)
-          const fetchPromises = updates.map(async (update: any) => {
-            try {
-              const response = await fetch(`/api/files/${encodeURIComponent(update.s3Key)}`);
-              if (!response.ok) throw new Error('Failed to fetch file');
-              const content = await response.text();
-              return {
-                fileName: update.fileName || `output-${Date.now()}.csv`,
-                content: content
-              };
-            } catch (error) {
-              console.error(`Failed to fetch ${update.s3Key}:`, error);
-              return null;
+                  case 'log':
+                    addConsoleLog({
+                      type: data.type || 'info',
+                      message: data.message,
+                      nodeId: data.nodeId,
+                      nodeName: data.nodeName
+                    });
+                    break;
+
+                  case 'error':
+                    addConsoleLog({
+                      type: 'error',
+                      message: data.message,
+                      nodeId: data.nodeId,
+                      nodeName: data.nodeName
+                    });
+                    addNotification({
+                      type: 'error',
+                      title: 'Deployment Failed',
+                      message: data.message
+                    });
+                    break;
+
+                  case 'complete':
+                    // Handle output file updates
+                    const outputNodeUpdates = data.outputNodeUpdates || [];
+                    const updatesByNode = new Map<string, typeof outputNodeUpdates>();
+
+                    for (const update of outputNodeUpdates) {
+                      if (!updatesByNode.has(update.nodeId)) {
+                        updatesByNode.set(update.nodeId, []);
+                      }
+                      updatesByNode.get(update.nodeId)!.push(update);
+                    }
+
+                    for (const [nodeId, updates] of updatesByNode) {
+                      clearNodeCsvData(nodeId);
+                      const outputNode = graph.nodes.find(n => n.id === nodeId);
+                      const existingFileIds = outputNode?.files?.map(f => f.id) || [];
+                      existingFileIds.forEach(fileId => removeNodeFile(nodeId, fileId));
+
+                      if ((window as any).__outputFiles?.[nodeId]) {
+                        delete (window as any).__outputFiles[nodeId];
+                        localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+                      }
+                      setSelectedOutputFileIndex(0);
+
+                      const csvContent = updates[0].csvContent;
+                      if (csvContent) {
+                        updateNodeCsvData(nodeId, csvContent, updates[0].fileName || 'output.csv');
+
+                        if (updates.length > 1) {
+                          (window as any).__outputFiles = (window as any).__outputFiles || {};
+                          (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
+                            fileName: u.fileName,
+                            content: u.csvContent
+                          }));
+                          localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+                        }
+                      }
+                    }
+
+                    addNotification({
+                      type: 'success',
+                      title: title,
+                      message: `Deployment ${data.deploymentId.slice(0, 8)} completed successfully`
+                    });
+                    break;
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE data:', e);
+                addConsoleLog({
+                  type: 'error',
+                  message: `Failed to parse server response: ${e instanceof Error ? e.message : 'Unknown error'}`
+                });
+              }
+              eventType = '';
+              eventData = '';
             }
-          });
-
-          const fetchedFiles = (await Promise.all(fetchPromises)).filter(f => f !== null);
-
-          if (fetchedFiles.length > 0) {
-            // Store first file's content in node
-            updateNodeCsvData(nodeId, fetchedFiles[0].content, fetchedFiles[0].fileName);
-
-            // Store all files for multi-file viewer
-            if (fetchedFiles.length > 1) {
-              (window as any).__outputFiles = (window as any).__outputFiles || {};
-              (window as any).__outputFiles[nodeId] = fetchedFiles;
-              // Persist to localStorage
-              localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
-
-              addNotification({
-                type: 'info',
-                title: 'Multiple Output Files',
-                message: `Generated ${fetchedFiles.length} output files. Click "Download All" to get a zip file.`
-              });
-            }
-          }
-        } else if (updates[0].csvContent) {
-          // Local deployment - store all CSV files
-          updateNodeCsvData(nodeId, updates[0].csvContent, updates[0].fileName || 'output.csv');
-          
-          // Store all output files for multi-file viewer
-          if (updates.length > 1) {
-            (window as any).__outputFiles = (window as any).__outputFiles || {};
-            (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
-              fileName: u.fileName,
-              content: u.csvContent
-            }));
-            // Persist to localStorage
-            localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
-
-            addNotification({
-              type: 'info',
-              title: 'Multiple Output Files',
-              message: `Generated ${updates.length} output files. Click "Download All" to get a zip file.`
-            });
           }
         }
       }
-
-      addNotification({
-        type: 'success',
-        title: title,
-        message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
-      });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      computeNodeIds.forEach(nodeId => updateNodeStatus(nodeId, 'failed'));
+      addConsoleLog({
+        type: 'error',
+        message: `Execution error: ${errorMessage}`
+      });
       addNotification({
         type: 'error',
         title: 'Execution Error',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: errorMessage
       });
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addNodeFile, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
 
   const handleRun = useCallback(async () => {
-    await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
-  }, [runDeployment]);
+    await runStreamingDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
+  }, [runStreamingDeployment]);
 
   const handleRunLocal = useCallback(async () => {
-    await runDeployment('/api/deploy-local', 'Local Test Complete');
-  }, [runDeployment]);
+    await runStreamingDeployment('/api/deploy-local', 'Local Test Complete');
+  }, [runStreamingDeployment]);
 
   const handleReset = useCallback(() => {
     resetAllStatuses();
@@ -565,6 +547,8 @@ export default function EditorPanel() {
     const file = selectedNode.files[fileIndex];
     if (!file) return;
 
+    // Clear previous content immediately to avoid showing stale data
+    setInputFileContent(null);
     setLoadingInputFile(true);
     try {
       const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`);
@@ -594,6 +578,9 @@ export default function EditorPanel() {
     if (selectedNode?.type === 'input-file' && selectedNode.files && selectedNode.files.length > 0 && !selectedNode.csvData) {
       setSelectedInputFileIndex(0);
       handleInputFileSelect(0);
+    } else if (selectedNode?.type === 'input-file' && (!selectedNode.files || selectedNode.files.length === 0)) {
+      setInputFileContent(null);
+      setSelectedInputFileIndex(0);
     } else if (selectedNode?.type !== 'input-file') {
       setInputFileContent(null);
       setSelectedInputFileIndex(0);
@@ -1154,7 +1141,14 @@ export default function EditorPanel() {
                 )}
               </>
             )}
-            {selectedNode.type !== 'compute' && !selectedNode.csvData && !inputFileContent && (
+            {selectedNode.type === 'input-file' && !selectedNode.csvData && !inputFileContent && loadingInputFile && (
+              <div className="empty-state">
+                <HardDrive size={48} strokeWidth={1} />
+                <h3>Loading File...</h3>
+                <p>Fetching file content from storage</p>
+              </div>
+            )}
+            {selectedNode.type !== 'compute' && !selectedNode.csvData && !inputFileContent && !loadingInputFile && (
               <div className="empty-state">
                 <HardDrive size={48} strokeWidth={1} />
                 <h3>{selectedNode.type === 'input-file' ? 'Input File' : 'Output File'}</h3>

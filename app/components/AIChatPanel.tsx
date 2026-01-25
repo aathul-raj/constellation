@@ -32,8 +32,12 @@ export default function AIChatPanel() {
   const [pendingNodeCreation, setPendingNodeCreation] = useState<NodeCreationIntent | null>(null);
   const [pendingPipelineGeneration, setPendingPipelineGeneration] = useState<GeneratePipelineIntent | null>(null);
   const [lastCreatedNodeId, setLastCreatedNodeId] = useState<string | null>(null);
+  const [inputHeight, setInputHeight] = useState(80); // Fallback height
+  const [isResizingInput, setIsResizingInput] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const inputContainerRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -50,6 +54,60 @@ export default function AIChatPanel() {
       }
     };
   }, []);
+
+  // Set initial input height to 20% of chat panel on mount
+  useEffect(() => {
+    if (inputContainerRef.current) {
+      const chatPanel = inputContainerRef.current.closest('.chat-panel');
+      if (chatPanel) {
+        const panelHeight = chatPanel.getBoundingClientRect().height;
+        const initialHeight = panelHeight * 0.2;
+        setInputHeight(Math.max(36, initialHeight)); // At least 36px
+      }
+    }
+  }, []);
+
+  // Handle input area resizing
+  const handleInputResize = useCallback((e: MouseEvent) => {
+    if (!isResizingInput || !inputContainerRef.current) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const chatPanel = inputContainerRef.current.closest('.chat-panel');
+    if (!chatPanel) return;
+
+    const panelRect = chatPanel.getBoundingClientRect();
+    const containerRect = inputContainerRef.current.getBoundingClientRect();
+
+    // Calculate new height based on mouse position (dragging up increases height)
+    const newHeight = containerRect.bottom - e.clientY;
+
+    // Min: single line (~36px), Max: 40% of panel height
+    const minHeight = 36;
+    const maxHeight = panelRect.height * 0.4;
+
+    setInputHeight(Math.max(minHeight, Math.min(newHeight, maxHeight)));
+  }, [isResizingInput]);
+
+  const handleInputResizeEnd = useCallback(() => {
+    setIsResizingInput(false);
+  }, []);
+
+  useEffect(() => {
+    if (isResizingInput) {
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'row-resize';
+      document.addEventListener('mousemove', handleInputResize);
+      document.addEventListener('mouseup', handleInputResizeEnd);
+      return () => {
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', handleInputResize);
+        document.removeEventListener('mouseup', handleInputResizeEnd);
+      };
+    }
+  }, [isResizingInput, handleInputResize, handleInputResizeEnd]);
 
   const streamText = useCallback((text: string, callback: () => void) => {
     console.log('[streamText] Text to display:', text);
@@ -919,22 +977,37 @@ export default function AIChatPanel() {
         <div ref={messagesEndRef} />
       </div>
 
-      <form className="chat-input-form" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={
-            selectedNode?.type === 'compute'
-              ? "Describe the task (e.g., 'sort by date', 'filter rows where x > 10')"
-              : "Select a compute node to write code, or ask a question..."
-          }
-          disabled={isTyping}
+      <div className="chat-input-container" ref={inputContainerRef}>
+        <div
+          className="chat-input-resize-handle"
+          onMouseDown={() => setIsResizingInput(true)}
         />
-        <button type="submit" disabled={!input.trim() || isTyping}>
-          <Send size={16} />
-        </button>
-      </form>
+        <form className="chat-input-form" onSubmit={handleSubmit}>
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (input.trim() && !isTyping) {
+                  handleSubmit(e);
+                }
+              }
+            }}
+            placeholder={
+              selectedNode?.type === 'compute'
+                ? "Describe the task (e.g., 'sort by date', 'filter rows where x > 10')"
+                : "Select a compute node to write code, or ask a question..."
+            }
+            disabled={isTyping}
+            style={{ height: `${inputHeight}px` }}
+          />
+          <button type="submit" disabled={!input.trim() || isTyping}>
+            <Send size={16} />
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

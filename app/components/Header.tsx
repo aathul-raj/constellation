@@ -41,7 +41,7 @@ export default function Header() {
             <span>Pipeline Running</span>
           </div>
         )}
-        <div className="stats">
+        {/* <div className="stats">
           <div className="stat">
             <span className="stat-value">{completedCount}/{graph.nodes.length}</span>
             <span className="stat-label">Completed</span>
@@ -50,7 +50,7 @@ export default function Header() {
             <span className="stat-value">{runningCount}</span>
             <span className="stat-label">Running</span>
           </div>
-        </div>
+        </div> */}
 
         {session && (
           <button

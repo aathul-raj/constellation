@@ -307,7 +307,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem 1rem;
+  padding: 1.03rem 1rem;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -323,7 +323,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1.34rem 1rem;
+  padding: 1.18rem 1rem;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -1517,15 +1517,48 @@ body {
   color: var(--accent-primary);
 }
 
-.chat-input-form {
+.chat-input-container {
   display: flex;
-  gap: 0.5rem;
-  padding: 1.31rem 1rem;
+  flex-direction: column;
   border-top: 1px solid var(--border-color);
   background: var(--bg-tertiary);
 }
 
-.chat-input-form input {
+.chat-input-resize-handle {
+  height: 6px;
+  cursor: row-resize;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.chat-input-resize-handle::after {
+  content: '';
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-color);
+  transition: background 0.15s;
+}
+
+.chat-input-resize-handle:hover {
+  background: var(--bg-hover);
+}
+
+.chat-input-resize-handle:hover::after {
+  background: var(--text-muted);
+}
+
+.chat-input-form {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 1rem;
+  align-items: flex-end;
+}
+
+.chat-input-form textarea {
   flex: 1;
   padding: 0.625rem 0.875rem;
   background: var(--bg-secondary);
@@ -1536,13 +1569,17 @@ body {
   color: var(--text-primary);
   outline: none;
   transition: border-color 0.2s;
+  resize: none;
+  min-height: 36px;
+  max-height: 40vh;
+  line-height: 1.5;
 }
 
-.chat-input-form input:focus {
+.chat-input-form textarea:focus {
   border-color: var(--accent-primary);
 }
 
-.chat-input-form input::placeholder {
+.chat-input-form textarea::placeholder {
   color: var(--text-muted);
 }
 
@@ -1558,6 +1595,7 @@ body {
   color: white;
   cursor: pointer;
   transition: background 0.2s;
+  flex-shrink: 0;
 }
 
 .chat-input-form button:hover:not(:disabled) {
@@ -1910,6 +1948,68 @@ body {
   overflow: auto;
   padding: 1rem;
   background: var(--bg-secondary);
+}
+
+/* Virtualized CSV Viewer */
+.csv-virtual-container {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg-secondary);
+  position: relative;
+}
+
+.csv-virtual-content {
+  min-width: 100%;
+}
+
+.csv-virtual-header {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+.csv-virtual-row {
+  width: 100%;
+}
+
+.csv-virtual-row:nth-child(even) {
+  background: var(--bg-tertiary);
+}
+
+.csv-virtual-cell {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-sizing: border-box;
+  background: inherit;
+}
+
+.csv-virtual-cell.csv-header-cell {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.csv-virtual-cell.csv-row-number,
+.csv-virtual-cell.csv-row-number-header {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  justify-content: center;
+  border-left: none;
+  font-weight: 500;
+}
+
+.csv-virtual-cell.csv-row-number-header {
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 /* Override react-spreadsheet styles to match theme */
