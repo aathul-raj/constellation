@@ -7,6 +7,7 @@ import type { AIResponse, NodeCreationIntent, EditNodeIntent, GeneratePipelineIn
 import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
 import { fixGeneratedCode, extractInputParamName } from '../utils/code-fixer';
 import { nodeNameToParamName } from '../utils/signature-generator';
+import { validateEditNodeResponse, validatePythonCode, toParamName, fixGeneratedCodeAdvanced, verifyCodeChange } from '../utils/code-validator';
 
 // Simple Markdown renderer for chat messages
 function renderMarkdown(content: string): React.ReactNode {
@@ -425,7 +426,25 @@ export default function AIChatPanel() {
         }
 
         case 'edit_node': {
-          const targetNodeId = data.nodeId || selectedNodeId;
+          // VALIDATION: Check that the edit_node response is valid before applying
+          const editValidation = validateEditNodeResponse(data, graph);
+          
+          if (!editValidation.valid) {
+            console.warn('[edit_node] Invalid response:', editValidation.issues);
+            // AI hallucinated - tell user what went wrong
+            const errorMsg = `I wasn't able to make that edit. Issues found:\n${editValidation.issues.map(i => `- ${i}`).join('\n')}\n\nPlease try again with a more specific request.`;
+            streamText(errorMsg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: errorMsg
+              });
+            });
+            break;
+          }
+
+          const targetNodeId = data.nodeId || (data.nodeName 
+            ? graph.nodes.find(n => n.name.toLowerCase() === data.nodeName.toLowerCase())?.id 
+            : selectedNodeId);
           const targetNode = targetNodeId ? graph.nodes.find(n => n.id === targetNodeId) : null;
 
           if (!targetNode) {
@@ -438,6 +457,9 @@ export default function AIChatPanel() {
             });
             break;
           }
+
+          // Track what changes are actually made
+          const changesMade: string[] = [];
 
           // Handle connection changes if specified
           const resolveConnectionIds = (connections?: string[]) =>
@@ -464,18 +486,22 @@ export default function AIChatPanel() {
 
           if (resolvedAddIn?.length) {
             resolvedAddIn.forEach((sourceId) => connectNodes(sourceId, targetNodeId));
+            changesMade.push(`Added ${resolvedAddIn.length} incoming connection(s)`);
           }
 
           if (resolvedAddOut?.length) {
             resolvedAddOut.forEach((targetId) => connectNodes(targetNodeId, targetId));
+            changesMade.push(`Added ${resolvedAddOut.length} outgoing connection(s)`);
           }
 
           if (resolvedRemoveIn?.length) {
             resolvedRemoveIn.forEach((sourceId) => disconnectNodes(sourceId, targetNodeId));
+            changesMade.push(`Removed ${resolvedRemoveIn.length} incoming connection(s)`);
           }
 
           if (resolvedRemoveOut?.length) {
             resolvedRemoveOut.forEach((targetId) => disconnectNodes(targetNodeId, targetId));
+            changesMade.push(`Removed ${resolvedRemoveOut.length} outgoing connection(s)`);
           }
 
           // Handle code changes if specified
@@ -491,15 +517,50 @@ export default function AIChatPanel() {
 
             // Fix the generated code to use correct variable references
             const fixedCode = fixGeneratedCode(data.newCode, inputParamName);
+
+            // Verify that the code was actually changed (anti-hallucination check)
+            const existingCode = targetNode.code || '';
+            const lastUserMessage = chatMessages.filter(m => m.role === 'user').pop()?.content || '';
+            const codeVerification = verifyCodeChange(existingCode, fixedCode, lastUserMessage);
+
+            if (!codeVerification.changed && codeVerification.issues.length > 0) {
+              // Code wasn't actually modified - this is a hallucination
+              console.warn('[edit_node] Code change verification failed:', codeVerification.issues);
+              const hallucMsg = `I tried to update the code but the change wasn't actually applied. ${codeVerification.issues.join(' ')}\n\nCould you be more specific? For example:\n- "Change the window size from 5 to 8 in the rolling mean calculation"\n- "Replace the filter condition 'x > 5' with 'x > 10'"`;
+              streamText(hallucMsg, () => {
+                addChatMessage({
+                  role: 'assistant',
+                  content: hallucMsg
+                });
+              });
+              break;
+            }
+
             updateNodeCode(targetNodeId, fixedCode);
+            changesMade.push('Updated code');
           }
 
           // Update parallelization if provided
           if (data.parallelization) {
             updateNodeParallelization(targetNodeId, data.parallelization);
+            changesMade.push(`Set parallelization to ${data.parallelization}`);
           }
 
-          const msg = data.message || `Updated node "${targetNode.name}".`;
+          // Verify that something was actually changed
+          if (changesMade.length === 0) {
+            console.warn('[edit_node] No actual changes made despite valid response');
+            const noChangeMsg = `I understood your request but couldn't determine what specific changes to make to "${targetNode.name}". Could you be more specific about what you'd like to change? For example:\n- "Change the code to filter rows where value > 100"\n- "Connect this node to the output node"\n- "Set parallelization to 4"`;
+            streamText(noChangeMsg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: noChangeMsg
+              });
+            });
+            break;
+          }
+
+          console.log('[edit_node] Changes made:', changesMade);
+          const msg = data.message || `Updated node "${targetNode.name}": ${changesMade.join(', ')}.`;
           streamText(msg, () => {
             addChatMessage({
               role: 'assistant',
@@ -645,14 +706,52 @@ export default function AIChatPanel() {
               tempIdToActualId.set(nodeSpec.tempId, actualId);
               nodeIdMap.set(nodeSpec.tempId, actualId);
 
+              // Find parent nodes for this node from the edges
+              const parentEdges = pipelineData.edges.filter(e => {
+                const toId = resolveNodeRef(e.to) || e.to;
+                return toId === nodeSpec.tempId || toId === actualId;
+              });
+              const parentNodes = parentEdges.map(e => {
+                const fromId = resolveNodeRef(e.from);
+                return fromId ? workingNodes.find(n => n.id === fromId) : undefined;
+              }).filter(Boolean);
+
+              // Calculate the expected param name based on parent nodes
+              const parentNode = parentNodes[0];
+              const expectedParamName = parentNode 
+                ? nodeNameToParamName(parentNode.name)
+                : 'in_df';
+
+              // Validate and fix generated code if provided
+              let finalCode = nodeSpec.pythonCode;
+              if (finalCode && nodeSpec.type === 'compute') {
+                // Validate the code against the expected context
+                const codeValidation = validatePythonCode(finalCode, {
+                  expectedParams: [expectedParamName],
+                  nodeNames: workingNodes.map(n => n.name)
+                });
+
+                if (codeValidation.fixedCode) {
+                  console.log(`[Pipeline] Auto-fixed code for "${nodeSpec.name}":`, {
+                    errors: codeValidation.errors,
+                    warnings: codeValidation.warnings
+                  });
+                  finalCode = codeValidation.fixedCode;
+                } else if (!codeValidation.valid) {
+                  console.warn(`[Pipeline] Code validation failed for "${nodeSpec.name}":`, codeValidation.errors);
+                  // Apply basic fixes anyway
+                  finalCode = fixGeneratedCode(finalCode, expectedParamName);
+                }
+              }
+
               // Create the node object
               workingNodes.push({
                 id: actualId,
                 name: nodeSpec.name,
                 type: nodeSpec.type,
                 status: 'queued',
-                code: nodeSpec.pythonCode || (nodeSpec.type === 'compute'
-                  ? `def task(in_df):\n    import numpy as np\n    import pandas as pd\n\n    # Your code here\n    \n    return in_df`
+                code: finalCode || (nodeSpec.type === 'compute'
+                  ? `def task(${expectedParamName}):\n    import numpy as np\n    import pandas as pd\n\n    # TODO: Add your processing code here\n    \n    return ${expectedParamName}`
                   : ''
                 ),
                 in: [],
@@ -768,7 +867,7 @@ export default function AIChatPanel() {
                   }
                 }
 
-                // Handle code update
+                // Handle code update with validation
                 if (edit.newCode && targetNode.type === 'compute') {
                   const parentNode = targetNode.in.length > 0
                     ? workingNodes.find(n => n.id === targetNode.in[0])
@@ -776,7 +875,19 @@ export default function AIChatPanel() {
                   const inputParamName = parentNode
                     ? nodeNameToParamName(parentNode.name)
                     : 'input';
-                  targetNode.code = fixGeneratedCode(edit.newCode, inputParamName);
+                  
+                  // Validate and fix the code
+                  const codeValidation = validatePythonCode(edit.newCode, {
+                    expectedParams: [inputParamName],
+                    nodeNames: workingNodes.map(n => n.name)
+                  });
+
+                  if (codeValidation.fixedCode) {
+                    console.log(`[Pipeline Edit] Auto-fixed code for "${targetNode.name}"`);
+                    targetNode.code = codeValidation.fixedCode;
+                  } else {
+                    targetNode.code = fixGeneratedCode(edit.newCode, inputParamName);
+                  }
                 }
 
                 if (edit.parallelization) {

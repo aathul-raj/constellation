@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
 import { generateFunctionSignature, nodeNameToParamName } from '@/app/utils/signature-generator';
+import { validatePythonCode, fixGeneratedCodeAdvanced } from '@/app/utils/code-validator';
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,9 +23,9 @@ export async function POST(request: NextRequest) {
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     // Use standard model for simple tasks, more capable model for complex pipeline generation
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
     // More capable model for pipeline generation (handles complex multi-node graphs better)
-    const pipelineModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const pipelineModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const selectedNode = selectedNodeId
       ? graph?.nodes?.find((n: { id: string }) => n.id === selectedNodeId)
@@ -174,15 +175,53 @@ PARALLELIZATION PRINCIPLES:
 4. **Vectorized operations**: Use numpy/pandas vectorized ops instead of loops when possible
 5. **Independent operations**: Each chunk should be processable without data from other chunks
 
+**CRITICAL - PARALLEL vs SEQUENTIAL DETECTION**:
+When user describes MULTIPLE operations, determine if they are PARALLEL or SEQUENTIAL:
+
+PARALLEL (create separate nodes that run simultaneously):
+- "compute X AND compute Y" where X and Y are independent operations
+- "calculate moving average of time AND moving average of temperature"
+- "process sales AND process inventory" (two independent computations)
+- Multiple operations from the SAME source that feed into a combiner/reducer
+- Pattern: Input → [Node A, Node B, Node C] → Combiner → Output
+
+SEQUENTIAL (chain nodes one after another):
+- "do X, THEN do Y" - explicit ordering
+- "filter first, THEN aggregate" - one depends on the other
+- "after X is done, run Y" - explicit dependency
+- Pattern: Input → Node A → Node B → Node C → Output
+
+EXAMPLES:
+1. User: "compute moving average of time and moving average of temperature, then combine them"
+   → PARALLEL: Input → [Time MA, Temp MA] → Combine → Output
+   → edges: [{from: "input_1", to: "time_ma"}, {from: "input_1", to: "temp_ma"}, {from: "time_ma", to: "combine"}, {from: "temp_ma", to: "combine"}]
+
+2. User: "filter the data, then compute the sum"
+   → SEQUENTIAL: Input → Filter → Sum → Output
+   → edges: [{from: "input_1", to: "filter"}, {from: "filter", to: "sum"}]
+
+WHEN IN DOUBT: If operations read from the same source and don't depend on each other's output, make them PARALLEL.
+
 CODE GENERATION REQUIREMENTS:
 1. **Robustness**: The generated code MUST be self-contained and error-resistant.
 2. **Defined Variables**: NEVER reference variables that are not explicitly defined.
-3. **MANDATORY**: You MUST STRICTLY use the variable name defined in the function signature.
+3. **MANDATORY - USE EXACT PARAMETER NAMES**: You MUST STRICTLY use the EXACT variable names from the function signature.
    - If you write def task(replace_with_ones):, YOU MUST use out_df = replace_with_ones.copy().
    - referencing in_df when the argument is named replace_with_ones is a CRITICAL ERROR.
+   - **NO ABBREVIATIONS**: Do NOT abbreviate parameter names in the code body!
+     - If parameter is "temperature_moving_average", use "temperature_moving_average", NOT "temp_ma"
+     - If parameter is "ph_moving_average", use "ph_moving_average", NOT "ph_ma"
+     - The code body MUST use the IDENTICAL names from the function signature
 4. **Input Handling**: The first argument is ALWAYS your input dataframe. Use it as the source.
 5. **Output Handling**: If modifying the data, explicitly define out_df = <input_arg_name>.copy() at the beginning.
 6. **Return Value**: ALWAYS return the output dataframe at the end.
+
+**CRITICAL - MULTI-INPUT FUNCTIONS**:
+When a function has multiple parameters (e.g., def task(time_moving_average, temperature_moving_average, ph_moving_average)):
+- You MUST use the EXACT parameter names in pd.merge(), pd.concat(), or any operation
+- WRONG: pd.merge(time_moving_average, temp_ma, ...)  ← temp_ma is UNDEFINED
+- RIGHT: pd.merge(time_moving_average, temperature_moving_average, ...)  ← uses exact param name
+- Check your code: every variable reference MUST either be (1) a parameter name, (2) defined with = assignment, or (3) imported
 
 EXAMPLE - Good (Consistent Naming):
 def task(my_data):
@@ -309,6 +348,20 @@ For EDIT_NODE intent (connection changes, renames, code changes on existing node
   "message": "<explanation>"
 }
 
+**CRITICAL - WHEN EDITING CODE VALUES**:
+When user asks to change a specific value (e.g., "change window from 5 to 8"):
+1. You MUST actually modify the code to reflect the change
+2. Find the EXACT location in the code where the value appears
+3. Replace the OLD value with the NEW value
+4. Do NOT return the same code with just comments or different formatting
+5. The newCode MUST be DIFFERENT from the original code
+
+Example:
+- User: "change the window of the moving average from 5 to 8"
+- Original code has: .rolling(window=5)
+- newCode MUST have: .rolling(window=8)  ← ACTUALLY CHANGED
+- DO NOT return code with .rolling(window=5) still in it
+
 For UPDATE_NAME intent:
 {
   "intent": "update_name",
@@ -332,7 +385,7 @@ For EDIT_NODE intent (editing existing node connections or code):
 Examples of EDIT_NODE usage:
 1. User: "Edit the Input Data node to also connect to the transform step"
    → nodeId: "550e8400-e29b-41d4-a716-446655440000" (the actual ID from the graph)
-   → newOutConnections: ["550e8400-e29b-41d4-a716-446655440001"] (actual ID of transform node)
+   → addOutConnections: ["550e8400-e29b-41d4-a716-446655440001"] (actual ID of transform node)
 
 2. User: "Change the output node to receive from the filter step instead"
    → nodeId: "550e8400-e29b-41d4-a716-446655440002" (actual output node ID)
@@ -341,6 +394,29 @@ Examples of EDIT_NODE usage:
 3. User: "Update the compute node code to use vectorized operations"
    → nodeId: "550e8400-e29b-41d4-a716-446655440001"
    → newCode: "<updated python code>"
+
+4. User: "Make Node A and Node B parallel, both feeding into Node C"
+   → This requires MULTIPLE edit_node operations. Use generate_pipeline with editNodes array:
+   {
+     "intent": "generate_pipeline",
+     "completeness": "ready_to_generate",
+     "nodes": [],  // No new nodes
+     "edges": [],  // No new edges from new nodes
+     "editNodes": [
+       {"nodeId": "<node-a-id>", "removeOutConnections": ["<node-b-id>"], "addOutConnections": ["<node-c-id>"]},
+       {"nodeId": "<node-b-id>", "removeInConnections": ["<node-a-id>"], "addOutConnections": ["<node-c-id>"]},
+       {"nodeId": "<node-c-id>", "newInConnections": ["<node-a-id>", "<node-b-id>"]}
+     ],
+     "message": "Made Node A and Node B parallel, both now feed into Node C"
+   }
+
+**CRITICAL FOR PARALLELIZATION REQUESTS**:
+When user wants to "make nodes parallel" or "restructure the graph":
+- If it involves changing MULTIPLE existing nodes' connections → use generate_pipeline with editNodes
+- Look at the current graph structure and determine what connections to add/remove
+- Use addOutConnections/addInConnections to add new edges
+- Use removeOutConnections/removeInConnections to remove existing edges
+- Set newInConnections/newOutConnections ONLY to completely replace all connections
 
 CRITICAL RULES FOR EDIT_NODE:
 - **IMPORTANT - Node IDs MUST be valid**:
@@ -606,7 +682,12 @@ IMPORTANT:
       // Parallel processing patterns
       /(parallel|split|fan-?out|distribute)\s+(the|into|across|to)/i.test(promptLower) ||
       // "that do the same thing as" - copying existing nodes
-      /do\s+the\s+same\s+(thing|operation|processing)/i.test(promptLower);
+      /do\s+the\s+same\s+(thing|operation|processing)/i.test(promptLower) ||
+      // Make nodes parallel / restructure graph
+      /make\s+(the\s+)?(two|both|\d+|multiple|these|those)\s+(\w+\s+)*(nodes?|compute)?\s*(parallel|run\s+in\s+parallel)/i.test(promptLower) ||
+      /(both|all)\s+(feed|connect|go)\s+(into|to)/i.test(promptLower) ||
+      // Parallel AND patterns (two independent operations)
+      /\b(compute|calculate|process)\s+\w+\s+(of\s+\w+\s+)?(and|,)\s*(compute|calculate|process)?\s*\w+\s+(of\s+\w+\s+)?/i.test(promptLower);
 
     // Explicit pipeline keywords
     const isExplicitPipelineKeyword =
@@ -1221,6 +1302,168 @@ RESPOND WITH JSON ONLY.`;
             completeness: 'ready_to_generate'
           };
         }
+      }
+    }
+
+    // ==========================================
+    // POST-VALIDATION: Validate and fix all generated code before returning
+    // ==========================================
+    if (parsed?.intent === 'generate_pipeline' && parsed?.nodes?.length) {
+      console.log('[Post-Validation] Validating generated pipeline code...');
+      
+      // Build a map of node tempIds/names to expected params based on edges
+      const nodeParamMap = new Map<string, string>();
+      
+      // First pass: map all nodes
+      for (const node of parsed.nodes) {
+        if (node.type === 'input-file') {
+          nodeParamMap.set(node.tempId, nodeNameToParamName(node.name));
+        }
+      }
+      
+      // Second pass: for each compute node, determine its parent and expected param
+      for (const node of parsed.nodes) {
+        if (node.type === 'compute' && node.pythonCode) {
+          // Find parent nodes from edges
+          const parentEdges = parsed.edges?.filter((e: any) => e.to === node.tempId) || [];
+          const parentIds = parentEdges.map((e: any) => e.from);
+          const parentNode = parsed.nodes.find((n: any) => parentIds.includes(n.tempId));
+          
+          const expectedParam = parentNode 
+            ? nodeNameToParamName(parentNode.name)
+            : 'in_df';
+          
+          // Validate and fix the code
+          const validation = validatePythonCode(node.pythonCode, {
+            expectedParams: [expectedParam],
+            nodeNames: parsed.nodes.map((n: any) => n.name)
+          });
+          
+          if (!validation.valid || validation.fixedCode) {
+            console.log(`[Post-Validation] Fixing code for node "${node.name}":`, {
+              errors: validation.errors,
+              warnings: validation.warnings,
+              wasFixed: !!validation.fixedCode
+            });
+            
+            if (validation.fixedCode) {
+              node.pythonCode = validation.fixedCode;
+            } else {
+              // Apply aggressive fix
+              node.pythonCode = fixGeneratedCodeAdvanced(node.pythonCode, {
+                expectedParams: [expectedParam],
+                nodeNames: parsed.nodes.map((n: any) => n.name)
+              });
+            }
+          }
+        }
+      }
+      
+      // Also validate editNodes if present
+      if (parsed.editNodes?.length) {
+        for (const edit of parsed.editNodes) {
+          if (edit.newCode) {
+            // Try to find the target node in the graph to get its parent
+            const targetNode = graph?.nodes?.find((n: any) => 
+              n.id === edit.nodeId || n.name?.toLowerCase() === edit.nodeName?.toLowerCase()
+            );
+            
+            let expectedParam = 'in_df';
+            if (targetNode && targetNode.in?.length > 0) {
+              const parentNode = graph?.nodes?.find((n: any) => n.id === targetNode.in[0]);
+              if (parentNode) {
+                expectedParam = nodeNameToParamName(parentNode.name);
+              }
+            }
+            
+            const validation = validatePythonCode(edit.newCode, {
+              expectedParams: [expectedParam],
+              nodeNames: graph?.nodes?.map((n: any) => n.name) || []
+            });
+            
+            if (validation.fixedCode) {
+              console.log(`[Post-Validation] Fixed editNode code for "${edit.nodeName || edit.nodeId}"`);
+              edit.newCode = validation.fixedCode;
+            }
+          }
+        }
+      }
+    }
+    
+    // Validate edit_node intent responses
+    if (parsed?.intent === 'edit_node' && parsed?.newCode) {
+      const targetNode = selectedNode || 
+        graph?.nodes?.find((n: any) => 
+          n.id === parsed.nodeId || n.name?.toLowerCase() === parsed.nodeName?.toLowerCase()
+        );
+      
+      let expectedParam = inputParamName || 'in_df';
+      if (targetNode && targetNode.in?.length > 0) {
+        const parentNode = graph?.nodes?.find((n: any) => n.id === targetNode.in[0]);
+        if (parentNode) {
+          expectedParam = nodeNameToParamName(parentNode.name);
+        }
+      }
+      
+      const validation = validatePythonCode(parsed.newCode, {
+        expectedParams: [expectedParam],
+        nodeNames: graph?.nodes?.map((n: any) => n.name) || []
+      });
+      
+      if (validation.fixedCode) {
+        console.log('[Post-Validation] Fixed edit_node code');
+        parsed.newCode = validation.fixedCode;
+      }
+    }
+    
+    // Validate create_node intent responses
+    if (parsed?.intent === 'create_node' && parsed?.pythonCode) {
+      let expectedParam = 'in_df';
+      
+      // Find the parent node to get correct param name
+      const parentNode = parsed.parentNodeId 
+        ? graph?.nodes?.find((n: any) => n.id === parsed.parentNodeId)
+        : parsed.parentNodeName
+          ? graph?.nodes?.find((n: any) => n.name?.toLowerCase() === parsed.parentNodeName?.toLowerCase())
+          : null;
+      
+      if (parentNode) {
+        expectedParam = nodeNameToParamName(parentNode.name);
+      }
+      
+      const validation = validatePythonCode(parsed.pythonCode, {
+        expectedParams: [expectedParam],
+        nodeNames: graph?.nodes?.map((n: any) => n.name) || []
+      });
+      
+      if (validation.fixedCode) {
+        console.log('[Post-Validation] Fixed create_node code');
+        parsed.pythonCode = validation.fixedCode;
+      }
+    }
+    
+    // Validate update_code intent responses
+    if (parsed?.intent === 'update_code' && parsed?.code) {
+      const targetNode = parsed.nodeId 
+        ? graph?.nodes?.find((n: any) => n.id === parsed.nodeId)
+        : selectedNode;
+      
+      let expectedParam = inputParamName || 'in_df';
+      if (targetNode && targetNode.in?.length > 0) {
+        const parentNode = graph?.nodes?.find((n: any) => n.id === targetNode.in[0]);
+        if (parentNode) {
+          expectedParam = nodeNameToParamName(parentNode.name);
+        }
+      }
+      
+      const validation = validatePythonCode(parsed.code, {
+        expectedParams: [expectedParam],
+        nodeNames: graph?.nodes?.map((n: any) => n.name) || []
+      });
+      
+      if (validation.fixedCode) {
+        console.log('[Post-Validation] Fixed update_code code');
+        parsed.code = validation.fixedCode;
       }
     }
 

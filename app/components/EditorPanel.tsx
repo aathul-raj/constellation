@@ -68,11 +68,17 @@ export default function EditorPanel() {
   const [analysisExpanded, setAnalysisExpanded] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
-  // Autopilot state - always enabled, AI automatically fixes errors
+  // Autopilot state - AI automatically fixes errors (after user confirmation)
   const [isAutopilotActive, setIsAutopilotActive] = useState(false);
   const [autopilotRetryCount, setAutopilotRetryCount] = useState(0);
   const [autopilotMaxRetries] = useState(10);
   const [currentFixingNode, setCurrentFixingNode] = useState<string | null>(null);
+  const [showAutopilotPrompt, setShowAutopilotPrompt] = useState(false);
+  const [pendingAutopilotError, setPendingAutopilotError] = useState<{
+    failedNodeId: string;
+    nodeName: string;
+    errorMessage: string;
+  } | null>(null);
   const stopAutopilotRef = useRef(false);
   const autopilotRetryCountRef = useRef(0); // Ref for closure access
   const autopilotAbortController = useRef<AbortController | null>(null);
@@ -452,7 +458,7 @@ export default function EditorPanel() {
         }
       }
 
-      // Autopilot: If deployment failed, automatically analyze and fix
+      // Autopilot: If deployment failed, ask user if they want AI to fix
       if (!deploymentSucceeded && failedNodeId && errorMessage) {
         // Check stop flag
         if (stopAutopilotRef.current) {
@@ -492,6 +498,21 @@ export default function EditorPanel() {
         const failedNode = currentGraph.nodes.find(n => n.id === failedNodeId);
         const nodeName = failedNode?.name || failedNodeId;
 
+        // If this is the first failure (not already in autopilot mode), ask the user
+        if (!isRetry && autopilotRetryCountRef.current === 0) {
+          // Store the error info and show the prompt
+          setPendingAutopilotError({
+            failedNodeId,
+            nodeName,
+            errorMessage
+          });
+          setShowAutopilotPrompt(true);
+          setIsRunning(false);
+          setCurrentDeploymentType(null);
+          return;
+        }
+
+        // If user already approved autopilot (isRetry), continue with the fix cycle
         setIsAutopilotActive(true);
         setCurrentFixingNode(nodeName);
         // Increment ref first, then update state for UI
@@ -622,6 +643,70 @@ export default function EditorPanel() {
     addChatMessage({
       role: 'assistant',
       content: 'Autopilot stopped by user.'
+    });
+  }, [addChatMessage]);
+
+  // Accept Autopilot prompt - user wants AI to fix the error
+  const handleAcceptAutopilot = useCallback(async () => {
+    if (!pendingAutopilotError) return;
+
+    const { failedNodeId, nodeName, errorMessage } = pendingAutopilotError;
+
+    // Hide the prompt
+    setShowAutopilotPrompt(false);
+    setPendingAutopilotError(null);
+
+    // Start the autopilot cycle
+    setIsAutopilotActive(true);
+    setCurrentFixingNode(nodeName);
+    autopilotRetryCountRef.current = 1;
+    setAutopilotRetryCount(1);
+
+    addChatMessage({
+      role: 'assistant',
+      content: `**Autopilot** fixing \`${nodeName}\`\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\n(Attempt 1/${autopilotMaxRetries})`
+    });
+
+    // Call the fix API
+    const freshGraph = useHPCStore.getState().graph;
+    const fixResult = await fixFailedNode(failedNodeId, errorMessage, freshGraph);
+
+    if (fixResult.success && fixResult.fixedCode) {
+      console.log('[Autopilot] Applying fix to node:', failedNodeId, 'nodeName:', nodeName);
+      updateNodeCode(failedNodeId, fixResult.fixedCode);
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      addChatMessage({
+        role: 'assistant',
+        content: `**Fixed** \`${nodeName}\`\n\n${fixResult.analysis}${fixResult.fixDescription ? `\n\n${fixResult.fixDescription}` : ''}\n\nRetrying deployment...`
+      });
+
+      setCurrentFixingNode(null);
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Continue with autopilot cycle
+      await runWithAutopilot('/api/deploy-local', 'Deploy Locally', true);
+    } else {
+      addChatMessage({
+        role: 'assistant',
+        content: `Could not fix \`${nodeName}\` automatically.\n\n${fixResult.analysis || 'Unable to determine fix.'}\n\nPlease fix manually.`
+      });
+      setIsAutopilotActive(false);
+      setAutopilotRetryCount(0);
+      autopilotRetryCountRef.current = 0;
+      setCurrentFixingNode(null);
+    }
+  }, [pendingAutopilotError, autopilotMaxRetries, addChatMessage, updateNodeCode, fixFailedNode, runWithAutopilot]);
+
+  // Decline Autopilot prompt - user wants to fix manually
+  const handleDeclineAutopilot = useCallback(() => {
+    setShowAutopilotPrompt(false);
+    setPendingAutopilotError(null);
+    addChatMessage({
+      role: 'assistant',
+      content: 'Autopilot declined. You can fix the error manually in the code editor.'
     });
   }, [addChatMessage]);
 
@@ -1773,6 +1858,40 @@ export default function EditorPanel() {
           </button>
         </div>
       </div>
+
+      {/* Autopilot Prompt - ask user if they want AI to fix */}
+      {showAutopilotPrompt && pendingAutopilotError && (
+        <div className="autopilot-prompt">
+          <div className="autopilot-prompt-content">
+            <div className="autopilot-prompt-header">
+              <Zap size={18} className="autopilot-icon" />
+              <span className="autopilot-prompt-title">Pipeline Error</span>
+            </div>
+            <div className="autopilot-prompt-body">
+              <p className="autopilot-prompt-node">
+                <strong>{pendingAutopilotError.nodeName}</strong> failed:
+              </p>
+              <pre className="autopilot-prompt-error">{pendingAutopilotError.errorMessage}</pre>
+              <p className="autopilot-prompt-question">Would you like Autopilot to fix this?</p>
+            </div>
+            <div className="autopilot-prompt-actions">
+              <button
+                className="autopilot-prompt-btn autopilot-prompt-btn-yes"
+                onClick={handleAcceptAutopilot}
+              >
+                <Zap size={14} />
+                Yes, fix it
+              </button>
+              <button
+                className="autopilot-prompt-btn autopilot-prompt-btn-no"
+                onClick={handleDeclineAutopilot}
+              >
+                No, I'll fix it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Autopilot Toast - floating notification */}
       {isAutopilotActive && (
