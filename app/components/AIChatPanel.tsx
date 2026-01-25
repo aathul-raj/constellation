@@ -50,6 +50,7 @@ export default function AIChatPanel() {
   }, []);
 
   const streamText = useCallback((text: string, callback: () => void) => {
+    console.log('[streamText] Text to display:', text);
     setIsStreaming(true);
     setStreamingMessage('');
 
@@ -59,10 +60,10 @@ export default function AIChatPanel() {
     const typeNextWord = () => {
       if (currentIndex < words.length) {
         setStreamingMessage(prev => {
-          const newText = prev + (currentIndex > 0 ? ' ' : '') + words[currentIndex];
-          currentIndex++;
+          const newText = prev + (prev.length > 0 ? ' ' : '') + words[currentIndex];
           return newText;
         });
+        currentIndex++;
       } else {
         if (streamingIntervalRef.current) {
           clearInterval(streamingIntervalRef.current);
@@ -558,7 +559,7 @@ export default function AIChatPanel() {
 
   return (
     <div className="chat-panel">
-      <div className="panel-header">
+      <div className="ai-assistant-panel-header">
         <h2>AI Assistant</h2>
         <span className="status-indicator online">Online</span>
       </div>

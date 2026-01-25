@@ -32,8 +32,6 @@ const getTempDir = () => {
   return tempDir;
 };
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
 // Helper to download file from S3
 async function downloadFromS3(key: string, destinationPath: string): Promise<void> {
   try {
@@ -184,6 +182,8 @@ async function executeTaskForFile(
 }
 
 export async function POST(request: NextRequest) {
+  const consoleLogs: Array<{type: string, message: string, nodeId?: string, nodeName?: string}> = [];
+  
   try {
     const { graph } = await request.json();
 
@@ -211,9 +211,70 @@ export async function POST(request: NextRequest) {
     mkdirSync(deployDir, { recursive: true });
 
     const nodeMap = new Map(graph.nodes.map((n: any) => [n.id, n]));
-    const consoleLogs: Array<{type: string, message: string, nodeId?: string, nodeName?: string}> = [];
 
-    // 1. Generate executable scripts for each compute node
+    // 1. Lint Python code for all compute nodes
+    console.log(`[${deploymentId}] Linting code for ${computeNodes.length} compute nodes...`);
+    consoleLogs.push({
+      type: 'info',
+      message: `Linting code for ${computeNodes.length} compute nodes...`
+    });
+
+    for (const node of computeNodes) {
+      if (!node.code || !node.code.trim()) {
+        console.log(`[${deploymentId}] ⚠ Skipping lint for ${node.name} (no code)`);
+        consoleLogs.push({
+          type: 'warning',
+          message: `Skipping lint for ${node.name} (no code)`,
+          nodeId: node.id,
+          nodeName: node.name
+        });
+        continue;
+      }
+
+      try {
+        // Generate the complete executable script (same as what will be executed)
+        const completeScript = createExecutableScript(node, graph);
+
+        const lintResponse = await fetch(`${request.nextUrl.origin}/api/lint`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: completeScript })
+        });
+
+        const lintResult = await lintResponse.json();
+
+        if (!lintResult.valid) {
+          const errorMsg = `Syntax errors in ${node.name}: ${lintResult.errors?.join(', ') || 'Unknown error'}`;
+          console.error(`[${deploymentId}] ✗ ${errorMsg}`);
+          consoleLogs.push({
+            type: 'error',
+            message: errorMsg,
+            nodeId: node.id,
+            nodeName: node.name
+          });
+          throw new Error(errorMsg);
+        }
+
+        console.log(`[${deploymentId}] ✓ Code validated for ${node.name}`);
+        consoleLogs.push({
+          type: 'success',
+          message: `Code validated for ${node.name}`,
+          nodeId: node.id,
+          nodeName: node.name
+        });
+      } catch (error) {
+        console.error(`[${deploymentId}] ✗ Lint failed for ${node.name}:`, error);
+        consoleLogs.push({
+          type: 'error',
+          message: `Lint failed for ${node.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          nodeId: node.id,
+          nodeName: node.name
+        });
+        throw error;
+      }
+    }
+
+    // 2. Generate executable scripts for each compute node
     console.log(`[${deploymentId}] Generating scripts for ${computeNodes.length} compute nodes...`);
     consoleLogs.push({
       type: 'info',
@@ -244,7 +305,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 1.5 Download input files from S3
+    // 3. Download input files from S3
     console.log(`[${deploymentId}] Setting up input files...`);
     const inputFileNodes = graph.nodes.filter((n: any) => n.type === 'input-file');
 
@@ -269,7 +330,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 2. Get execution levels (topological sort)
+    // 4. Get execution levels (topological sort)
     console.log(`[${deploymentId}] Computing execution levels...`);
     const levels = getExecutionLevels(graph);
 
@@ -285,7 +346,7 @@ export async function POST(request: NextRequest) {
 
     console.log(`[${deploymentId}] Execution plan: ${computeLevels.length} levels, ${computeLevels.map(l => l.length).join(' + ')} jobs per level`);
 
-    // 3. Execute scripts locally level by level
+    // 5. Execute scripts locally level by level
     const nodeResults = new Map();
     let levelIndex = 0;
 
@@ -346,7 +407,7 @@ export async function POST(request: NextRequest) {
       console.log(`[${deploymentId}] Level ${levelIndex} completed`);
     }
 
-    // 4. Prepare output files and map to output-file nodes
+    // 6. Prepare output files and map to output-file nodes
     const outputFiles: { [key: string]: string } = {};
     const outputNodeUpdates: Array<{ nodeId: string; outputFileNodeId: string; csvContent: string; fileName: string }> = [];
 
@@ -413,7 +474,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: 'Deployment failed',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: error instanceof Error ? error.message : 'Unknown error',
+        consoleLogs: consoleLogs
       },
       { status: 500 }
     );

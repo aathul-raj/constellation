@@ -44,9 +44,7 @@ export default function EditorPanel() {
     theme,
     addNotification,
     addConsoleLog,
-    clearConsoleLogs,
-    hasConsoleError,
-    setHasConsoleError
+    clearConsoleLogs
   } = useHPCStore();
 
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
@@ -56,7 +54,12 @@ export default function EditorPanel() {
   const [consoleHeight, setConsoleHeight] = useState(250); // Default ~1/3 of typical screen
   const [isResizing, setIsResizing] = useState(false);
   const [selectedOutputFileIndex, setSelectedOutputFileIndex] = useState(0);
+  const [selectedInputFileIndex, setSelectedInputFileIndex] = useState(0);
+  const [inputFileContent, setInputFileContent] = useState<string | null>(null);
+  const [loadingInputFile, setLoadingInputFile] = useState(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const consoleRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const selectedNode = useMemo(() => {
     const node = graph.nodes.find(n => n.id === selectedNodeId);
@@ -104,19 +107,83 @@ export default function EditorPanel() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+  // Pre-deployment lint check
+  const lintComputeNodes = useCallback(async () => {
+    const computeNodes = graph.nodes.filter(n => n.type === 'compute');
+    const errors: Array<{ nodeName: string; errors: string[] }> = [];
+
+    for (const node of computeNodes) {
+      if (!node.code || !node.code.trim()) {
+        continue;
+      }
+
+      try {
+        // Import createExecutableScript dynamically
+        const { createExecutableScript } = await import('../utils/code-wrapper');
+        const completeScript = createExecutableScript(node, graph);
+
+        const lintResponse = await fetch('/api/lint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: completeScript })
+        });
+
+        const lintResult = await lintResponse.json();
+
+        if (!lintResult.valid && lintResult.errors) {
+          errors.push({
+            nodeName: node.name,
+            errors: lintResult.errors
+          });
+        }
+      } catch (error) {
+        errors.push({
+          nodeName: node.name,
+          errors: [error instanceof Error ? error.message : 'Unknown error']
+        });
+      }
+    }
+
+    return errors;
+  }, [graph]);
+
   const runDeployment = useCallback(async (endpoint: string, title: string) => {
     if (isRunning) return;
+
+    // Run pre-deployment lint check
+    const lintErrors = await lintComputeNodes();
+    
+    if (lintErrors.length > 0) {
+      // Display syntax errors to user
+      const errorMessages = lintErrors.map(({ nodeName, errors }) => 
+        `**${nodeName}**: ${errors.join('; ')}`
+      ).join('\n\n');
+
+      addNotification({
+        type: 'error',
+        title: 'Syntax Errors Detected',
+        message: `Please fix the following errors before running:\n\n${errorMessages}`
+      });
+
+      // Also add to console logs
+      clearConsoleLogs();
+      lintErrors.forEach(({ nodeName, errors }) => {
+        errors.forEach(error => {
+          addConsoleLog({
+            type: 'error',
+            message: error,
+            nodeName: nodeName
+          });
+        });
+      });
+
+      return;
+    }
 
     setIsRunning(true);
     setRunProgress(0);
     resetAllStatuses();
     clearConsoleLogs();
-    setHasConsoleError(false);
-
-    addConsoleLog({
-      type: 'info',
-      message: `Starting deployment...`
-    });
 
     try {
       const response = await fetch(endpoint, {
@@ -127,23 +194,35 @@ export default function EditorPanel() {
 
       const deployResult = await response.json();
 
-      if (!response.ok) {
-        addConsoleLog({
-          type: 'error',
-          message: `Deployment failed: ${deployResult.message || 'Failed to deploy pipeline'}`
+      // Process console logs if available (even on error)
+      if (deployResult.consoleLogs && Array.isArray(deployResult.consoleLogs)) {
+        deployResult.consoleLogs.forEach((log: any) => {
+          addConsoleLog({
+            type: log.type || 'info',
+            message: log.message,
+            nodeId: log.nodeId,
+            nodeName: log.nodeName
+          });
         });
-        setHasConsoleError(true);
+      }
+
+      if (!response.ok) {
+        addNotification({
+          type: 'error',
+          title: 'Deployment Failed',
+          message: deployResult.message || 'Failed to deploy pipeline'
+        });
         setIsRunning(false);
         return;
       }
 
       // Verify deployment completed successfully
       if (deployResult.status !== 'completed') {
-        addConsoleLog({
+        addNotification({
           type: 'error',
-          message: `Deployment error: ${deployResult.message || 'Deployment failed to complete'}`
+          title: 'Deployment Error',
+          message: deployResult.message || 'Deployment failed to complete'
         });
-        setHasConsoleError(true);
         setIsRunning(false);
         return;
       }
@@ -173,28 +252,72 @@ export default function EditorPanel() {
 
       // Process each output node
       for (const [nodeId, updates] of updatesByNode) {
+        // Clear existing output data first to avoid stale files showing
+        clearNodeCsvData(nodeId);
+        // Clear existing files from the node (copy array to avoid mutation during iteration)
+        const outputNode = graph.nodes.find(n => n.id === nodeId);
+        const existingFileIds = outputNode?.files?.map(f => f.id) || [];
+        existingFileIds.forEach(fileId => removeNodeFile(nodeId, fileId));
+        // Clear window cache for this node
+        if ((window as any).__outputFiles?.[nodeId]) {
+          delete (window as any).__outputFiles[nodeId];
+          // Persist the update to localStorage
+          localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+        }
+        // Reset output file viewer index
+        setSelectedOutputFileIndex(0);
+
         if (updates[0].s3Key) {
-          // AWS deployment - add S3 file references
-          for (const update of updates) {
-            addNodeFile(nodeId, {
-              id: update.s3Key,
-              name: update.fileName || `output-${Date.now()}.csv`
-            });
+          // AWS deployment - fetch S3 files and store content (same as local)
+          const fetchPromises = updates.map(async (update: any) => {
+            try {
+              const response = await fetch(`/api/files/${encodeURIComponent(update.s3Key)}`);
+              if (!response.ok) throw new Error('Failed to fetch file');
+              const content = await response.text();
+              return {
+                fileName: update.fileName || `output-${Date.now()}.csv`,
+                content: content
+              };
+            } catch (error) {
+              console.error(`Failed to fetch ${update.s3Key}:`, error);
+              return null;
+            }
+          });
+
+          const fetchedFiles = (await Promise.all(fetchPromises)).filter(f => f !== null);
+
+          if (fetchedFiles.length > 0) {
+            // Store first file's content in node
+            updateNodeCsvData(nodeId, fetchedFiles[0].content, fetchedFiles[0].fileName);
+
+            // Store all files for multi-file viewer
+            if (fetchedFiles.length > 1) {
+              (window as any).__outputFiles = (window as any).__outputFiles || {};
+              (window as any).__outputFiles[nodeId] = fetchedFiles;
+              // Persist to localStorage
+              localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+
+              addNotification({
+                type: 'info',
+                title: 'Multiple Output Files',
+                message: `Generated ${fetchedFiles.length} output files. Click "Download All" to get a zip file.`
+              });
+            }
           }
         } else if (updates[0].csvContent) {
-          // Local deployment - store all CSV files in a special property
-          // For now, just show the first file's content in the viewer
+          // Local deployment - store all CSV files
           updateNodeCsvData(nodeId, updates[0].csvContent, updates[0].fileName || 'output.csv');
           
-          // Store all output files for zip download
+          // Store all output files for multi-file viewer
           if (updates.length > 1) {
-            // Store reference to all files in the node (we'll add this to the store)
             (window as any).__outputFiles = (window as any).__outputFiles || {};
             (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
               fileName: u.fileName,
               content: u.csvContent
             }));
-            
+            // Persist to localStorage
+            localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+
             addNotification({
               type: 'info',
               title: 'Multiple Output Files',
@@ -204,45 +327,21 @@ export default function EditorPanel() {
         }
       }
 
-      // Add console logs from deployment result
-      const consoleLogs = deployResult.consoleLogs || [];
-      let hasError = false;
-      consoleLogs.forEach((log: any) => {
-        addConsoleLog({
-          type: log.type || 'info',
-          message: log.message,
-          nodeId: log.nodeId,
-          nodeName: log.nodeName
-        });
-        if (log.type === 'error') {
-          hasError = true;
-        }
-      });
-
-      if (hasError) {
-        setHasConsoleError(true);
-      }
-
-      addConsoleLog({
-        type: 'success',
-        message: `Deployment completed successfully`
-      });
-
       addNotification({
         type: 'success',
         title: title,
         message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
       });
     } catch (error) {
-      addConsoleLog({
+      addNotification({
         type: 'error',
-        message: `Execution error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`
+        title: 'Execution Error',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
-      setHasConsoleError(true);
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addConsoleLog, clearConsoleLogs, setHasConsoleError]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, addNodeFile, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
 
   const handleRun = useCallback(async () => {
     await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
@@ -456,6 +555,48 @@ export default function EditorPanel() {
     }
   }, [handleSaveName]);
 
+  const handleInputFileSelect = useCallback(async (fileIndex: number) => {
+    setSelectedInputFileIndex(fileIndex);
+    if (!selectedNode || selectedNode.type !== 'input-file' || !selectedNode.files) return;
+
+    const file = selectedNode.files[fileIndex];
+    if (!file) return;
+
+    setLoadingInputFile(true);
+    try {
+      const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`);
+      if (response.ok) {
+        const text = await response.text();
+        setInputFileContent(text);
+      } else {
+        addNotification({
+          type: 'error',
+          title: 'Failed to Load File',
+          message: 'Could not fetch file from S3'
+        });
+      }
+    } catch (error) {
+      addNotification({
+        type: 'error',
+        title: 'Error Loading File',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setLoadingInputFile(false);
+    }
+  }, [selectedNode, addNotification]);
+
+  // Auto-load first input file when node is selected
+  useEffect(() => {
+    if (selectedNode?.type === 'input-file' && selectedNode.files && selectedNode.files.length > 0 && !selectedNode.csvData) {
+      setSelectedInputFileIndex(0);
+      handleInputFileSelect(0);
+    } else if (selectedNode?.type !== 'input-file') {
+      setInputFileContent(null);
+      setSelectedInputFileIndex(0);
+    }
+  }, [selectedNode, handleInputFileSelect]);
+
   const handleConsoleResize = useCallback((e: MouseEvent) => {
     if (!isResizing) return;
 
@@ -491,6 +632,34 @@ export default function EditorPanel() {
       };
     }
   }, [isResizing, handleConsoleResize, handleConsoleResizeEnd]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+
+    if (isDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [isDropdownOpen]);
+
+  // Load output files from localStorage on mount
+  useEffect(() => {
+    const savedOutputFiles = localStorage.getItem('outputFiles');
+    if (savedOutputFiles) {
+      try {
+        (window as any).__outputFiles = JSON.parse(savedOutputFiles);
+      } catch (error) {
+        console.error('Failed to load output files from localStorage:', error);
+      }
+    }
+  }, []);
 
   const getTypeIcon = (type: string) => {
     switch (type) {
@@ -559,28 +728,66 @@ export default function EditorPanel() {
                     <span className="file-upload-hint">CSV or ZIP files</span>
                   </div>
                   {selectedNode.files && selectedNode.files.length > 0 && (
-                    <div className="uploaded-files-list">
-                      <div className="files-header">
-                        <span>Uploaded Files ({selectedNode.files.length})</span>
-                      </div>
-                      {selectedNode.files.map((file) => (
-                        <div key={file.id} className="file-item">
-                          <div className="file-item-info">
-                            <FileText size={14} />
-                            <span className="file-name">{file.name}</span>
-                            {file.metadata?.rowCount && (
-                              <span className="file-meta">{file.metadata.rowCount} rows</span>
-                            )}
-                          </div>
+                    <div className="input-files-dropdown" ref={dropdownRef}>
+                      <label className="dropdown-label">
+                        Uploaded Files ({selectedNode.files.length})
+                      </label>
+                      <div className="dropdown-row">
+                        <div className="custom-dropdown">
                           <button
-                            className="file-remove-btn"
-                            onClick={() => removeNodeFile(selectedNode.id, file.id)}
-                            title="Remove file"
+                            className="dropdown-trigger"
+                            onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                            type="button"
                           >
-                            <X size={14} />
+                            <FileText size={14} />
+                            <span className="dropdown-text">
+                              {selectedNode.files[selectedInputFileIndex]?.name}
+                            </span>
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              className={`dropdown-arrow ${isDropdownOpen ? 'open' : ''}`}
+                            >
+                              <polyline points="6 9 12 15 18 9" />
+                            </svg>
                           </button>
+                          {isDropdownOpen && (
+                            <div className="dropdown-menu">
+                              {selectedNode.files.map((file, index) => (
+                                <div
+                                  key={file.id}
+                                  className={`dropdown-item ${index === selectedInputFileIndex ? 'active' : ''}`}
+                                  onClick={() => {
+                                    handleInputFileSelect(index);
+                                    setIsDropdownOpen(false);
+                                  }}
+                                >
+                                  <FileText size={14} />
+                                  <span className="dropdown-item-text">
+                                    {file.name}
+                                  </span>
+                                  {file.metadata?.rowCount && (
+                                    <span className="dropdown-item-meta">
+                                      {file.metadata.rowCount} rows
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      ))}
+                        <button
+                          className="file-remove-btn-compact"
+                          onClick={() => removeNodeFile(selectedNode.id, selectedNode.files![selectedInputFileIndex].id)}
+                          title="Remove selected file"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
                     </div>
                   )}
                 </>
@@ -593,7 +800,6 @@ export default function EditorPanel() {
                         <button
                           className="file-download-btn"
                           onClick={handleDownloadAllAsZip}
-                          style={{ background: 'var(--accent-primary)', color: 'white' }}
                         >
                           <Download size={14} />
                           <span>Download All ({(window as any).__outputFiles[selectedNode.id].length} files)</span>
@@ -725,6 +931,24 @@ export default function EditorPanel() {
                 isUploading={uploadingNodeId === selectedNodeId}
               />
             )}
+            {selectedNode.type === 'input-file' && !selectedNode.csvData && inputFileContent && (
+              <CSVViewer
+                data={inputFileContent}
+                fileName={selectedNode.files?.[selectedInputFileIndex]?.name || 'file.csv'}
+                onDownload={() => {
+                  if (!selectedNode.files?.[selectedInputFileIndex]) return;
+                  const file = selectedNode.files[selectedInputFileIndex];
+                  const link = document.createElement('a');
+                  const blob = new Blob([inputFileContent], { type: 'text/csv' });
+                  link.href = URL.createObjectURL(blob);
+                  link.download = file.name;
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                  URL.revokeObjectURL(link.href);
+                }}
+              />
+            )}
             {selectedNode.type === 'output-file' && selectedNode.csvData && (
               <>
                 {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
@@ -773,7 +997,7 @@ export default function EditorPanel() {
                 )}
               </>
             )}
-            {selectedNode.type !== 'compute' && !selectedNode.csvData && (
+            {selectedNode.type !== 'compute' && !selectedNode.csvData && !inputFileContent && (
               <div className="empty-state">
                 <HardDrive size={48} strokeWidth={1} />
                 <h3>{selectedNode.type === 'input-file' ? 'Input File' : 'Output File'}</h3>
@@ -823,15 +1047,11 @@ export default function EditorPanel() {
         <div className="footer-actions">
           {!consoleOpen && (
             <button
-              className={`btn btn-console ${hasConsoleError ? 'error' : ''}`}
-              onClick={() => {
-                setConsoleOpen(true);
-                setHasConsoleError(false);
-              }}
+              className="btn btn-console"
+              onClick={() => setConsoleOpen(true)}
             >
               <ChevronUp size={16} />
               Debug Console
-              {hasConsoleError && <span className="error-badge">!</span>}
             </button>
           )}
           <button

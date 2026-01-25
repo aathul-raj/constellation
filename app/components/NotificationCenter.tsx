@@ -11,9 +11,11 @@ export default function NotificationCenter() {
     if (notifications.length === 0) return;
 
     const lastNotification = notifications[notifications.length - 1];
+    // Show error notifications longer (10s) to give users time to read them
+    const timeout = lastNotification.type === 'error' ? 10000 : 4000;
     const timer = setTimeout(() => {
       removeNotification(lastNotification.id);
-    }, 4000);
+    }, timeout);
 
     return () => clearTimeout(timer);
   }, [notifications, removeNotification]);

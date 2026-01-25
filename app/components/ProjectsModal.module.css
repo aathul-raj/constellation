@@ -209,3 +209,88 @@
   background: rgba(255, 59, 48, 0.1);
   color: #ff3b30;
 }
+
+.createForm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.projectInput {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+  transition: all 0.2s;
+  min-width: 200px;
+}
+
+.projectInput:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  background: var(--bg-secondary);
+}
+
+.projectInput:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.projectInput::placeholder {
+  color: var(--text-tertiary);
+}
+
+.btnCreate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--accent-color);
+  color: white;
+  white-space: nowrap;
+}
+
+.btnCreate:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btnCreate:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btnCancel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.btnCancel:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.btnCancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

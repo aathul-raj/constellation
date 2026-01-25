@@ -315,11 +315,19 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1.35rem 1rem;
+  padding: 1.175rem 1rem;
   border-bottom: 1px solid var(--border-color);
 }
 
-.panel-header h2, .graph-panel-header h2 {
+.ai-assistant-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.34rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.panel-header h2, .graph-panel-header h2, .ai-assistant-panel-header h2 {
   font-size: 0.8125rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -522,7 +530,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem 1rem;
+  padding: 0.625rem 0.875rem;
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-color);
 }
@@ -655,17 +663,6 @@ body {
   font-style: italic;
 }
 
-.file-upload-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  background: var(--bg-tertiary);
-  border: 1px dashed var(--border-color);
-  border-radius: 6px;
-  margin-bottom: 0.75rem;
-}
-
 .file-upload-hint {
   font-size: 0.6875rem;
   color: var(--text-muted);
@@ -678,18 +675,155 @@ body {
   margin-top: 0.5rem;
 }
 
+.input-files-dropdown {
+  margin-top: 0;
+  max-width: 40%;
+
+}
+
+.dropdown-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+}
+
+.dropdown-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.custom-dropdown {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  max-width: 300px;
+}
+
+.dropdown-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.dropdown-trigger:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-primary);
+}
+
+.dropdown-text {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dropdown-arrow {
+  flex-shrink: 0;
+  transition: transform 0.2s;
+}
+
+.dropdown-arrow.open {
+  transform: rotate(180deg);
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 300px;
+  margin-top: 0.25rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.dropdown-item:hover {
+  background: var(--bg-hover);
+}
+
+.dropdown-item.active {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-primary);
+}
+
+.dropdown-item-text {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.dropdown-item-meta {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  margin-left: 0.5rem;
+}
+
+.file-remove-btn-compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.file-remove-btn-compact:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--error);
+  color: var(--error);
+}
+
 .files-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0.5rem 0.75rem;
   background: var(--bg-tertiary);
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .file-item {
@@ -1525,7 +1659,6 @@ body {
 }
 
 /* CSV Viewer and Editor */
-.csv-viewer-container,
 .csv-editor-container {
   display: flex;
   flex-direction: column;
@@ -1540,7 +1673,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem 1rem;
+  padding: 0.875rem 1.5rem;
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-color);
   position: relative;
@@ -1551,6 +1684,20 @@ body {
   display: flex;
   align-items: center;
   gap: 1rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.csv-filename {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 60%
 }
 
 .csv-info h3 {
@@ -1563,6 +1710,8 @@ body {
   font-size: 0.6875rem;
   color: var(--text-muted);
   padding: 0.25rem 0.5rem;
+  flex-shrink: 0;
+  white-space: nowrap;
   background: rgba(59, 130, 246, 0.1);
   border-radius: 4px;
 }
@@ -1571,6 +1720,7 @@ body {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .csv-download-btn,
@@ -1732,10 +1882,6 @@ body {
   overflow: auto;
   padding: 1rem;
   background: var(--bg-secondary);
-}
-
-.csv-spreadsheet-wrapper.csv-read-only {
-  background: var(--bg-tertiary);
 }
 
 /* Override react-spreadsheet styles to match theme */
