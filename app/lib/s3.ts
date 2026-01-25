@@ -11,7 +11,7 @@ const s3Client = new S3Client({
   },
 });
 
-const bucketName = process.env.NEXT_PUBLIC_S3_BUCKET_NAME || '';
+const bucketName = process.env.S3_BUCKET_NAME || '';
 
 export interface UploadResponse {
   key: string;

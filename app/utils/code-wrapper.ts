@@ -1,27 +1,15 @@
 import { HPCNode, HPCGraph } from '@/app/store/hpc-store';
 
-
 /**
  * Create a complete executable Python script from a compute node
  *
- * Generates:
- * - Imports (pandas, numpy)
- * - The task function
- * - Optional S3 I/O wrapper for AWS deployment
- *
- * For local testing: set includeS3Wrapper to false
- * For AWS Batch: set includeS3Wrapper to true
+ * For AWS Batch deployment (production):
+ * - Reads inputs from S3 using environment variables
+ * - Writes output to S3
+ * - Uses boto3 for file I/O
  */
-export function createExecutableScript(
-  node: HPCNode,
-  graph: HPCGraph,
-  options: { includeS3Wrapper?: boolean; inputPaths?: Record<string, string>; outputPath?: string } = {}
-): string {
-  const { includeS3Wrapper = false, inputPaths = {}, outputPath = '/tmp/output' } = options;
-
-  // Get upstream and downstream nodes
+export function createExecutableScript(node: HPCNode, graph: HPCGraph): string {
   const upstreamNodes = graph.nodes.filter((n) => node.in.includes(n.id));
-  const downstreamNodes = graph.nodes.filter((n) => node.out.includes(n.id));
 
   let script = `#!/usr/bin/env python3
 """
@@ -33,105 +21,61 @@ import numpy as np
 import json
 import sys
 import os
+import boto3
+from io import StringIO
+
+# AWS configuration from environment variables
+BUCKET_NAME = os.environ.get('BUCKET_NAME', 'hpc-bucket')
+OUTPUT_PATH = os.environ.get('OUTPUT_PATH', '${node.id}/output.csv')
+
+s3_client = boto3.client('s3')
 
 ${node.code}
 
+if __name__ == "__main__":
+    try:
 `;
 
-  if (includeS3Wrapper) {
-    script += createS3Wrapper(node, upstreamNodes, downstreamNodes, inputPaths, outputPath);
+  // Load inputs from S3
+  if (upstreamNodes.length === 0) {
+    script += `        # No inputs, call function directly
+        result = task()
+`;
   } else {
-    script += createLocalWrapper(node, upstreamNodes, downstreamNodes);
+    upstreamNodes.forEach((upstream) => {
+      const paramName = upstream.name.toLowerCase().replace(/[^a-z0-9]/g, '_');
+      const envVarName = `INPUT_${upstream.id}`;
+      script += `        # Load ${upstream.name} from S3
+        input_path_${upstream.id} = os.environ.get('${envVarName}', '${upstream.id}/output.csv')
+        obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=input_path_${upstream.id})
+        ${paramName} = pd.read_csv(StringIO(obj['Body'].read().decode('utf-8')))
+`;
+    });
+
+    const params = upstreamNodes
+      .map((n) => n.name.toLowerCase().replace(/[^a-z0-9]/g, '_'))
+      .join(', ');
+    script += `
+        # Call task function with inputs
+        result = task(${params})
+`;
   }
+
+  script += `
+        # Write output to S3
+        csv_buffer = StringIO()
+        result.to_csv(csv_buffer, index=False)
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=OUTPUT_PATH,
+            Body=csv_buffer.getvalue().encode('utf-8')
+        )
+        print("Task completed successfully")
+
+    except Exception as e:
+        print(f"Task failed: {str(e)}")
+        sys.exit(1)
+`;
 
   return script;
-}
-
-/**
- * Create a wrapper for local execution (testing)
- * Assumes input files are available locally
- */
-function createLocalWrapper(
-  node: HPCNode,
-  upstreamNodes: HPCNode[],
-  downstreamNodes: HPCNode[]
-): string {
-  if (upstreamNodes.length === 0) {
-    return `if __name__ == "__main__":
-    # No inputs, call function directly
-    result = task()
-    print("Task completed successfully")
-`;
-  }
-
-  // Generate input loading code
-  const inputLoads = upstreamNodes
-    .map((upstream) => {
-      const paramName = upstream.name.toLowerCase().replace(/[^a-z0-9]/g, '_');
-      return `    ${paramName} = pd.read_csv('/tmp/${upstream.id}.csv')  # Load from ${upstream.name}`;
-    })
-    .join('\n');
-
-  const inputParams = upstreamNodes.map((n) => n.name.toLowerCase().replace(/[^a-z0-9]/g, '_')).join(', ');
-
-  let wrapper = `if __name__ == "__main__":
-${inputLoads}
-
-    # Call task function
-    result = task(${inputParams})
-
-    # Save result
-    if isinstance(result, pd.DataFrame):
-        result.to_csv('/tmp/${node.id}.csv', index=False)
-    else:
-        json.dump(result, open('/tmp/${node.id}.json', 'w'))
-    print("Task completed successfully")
-`;
-
-  return wrapper;
-}
-
-/**
- * Create a wrapper for AWS S3 execution
- * Handles reading from and writing to S3
- */
-function createS3Wrapper(
-  node: HPCNode,
-  upstreamNodes: HPCNode[],
-  downstreamNodes: HPCNode[],
-  inputPaths: Record<string, string>,
-  outputPath: string
-): string {
-  return `if __name__ == "__main__":
-    import boto3
-    from io import StringIO
-
-    s3_client = boto3.client('s3')
-
-    # Load inputs from S3
-${upstreamNodes
-  .map((upstream) => {
-    const paramName = upstream.name.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const path = inputPaths[upstream.id] || `/tmp/${upstream.id}.csv`;
-    return `    # Load ${upstream.name}
-    with open('${path}', 'r') as f:
-        ${paramName} = pd.read_csv(f)`;
-  })
-  .join('\n\n')}
-
-    # Call task function
-    try:
-        ${upstreamNodes.length > 0 ? `result = task(${upstreamNodes.map((n) => n.name.toLowerCase().replace(/[^a-z0-9]/g, '_')).join(', ')})` : 'result = task()'}
-    except Exception as e:
-        print(f"Task failed: {e}")
-        sys.exit(1)
-
-    # Save result
-    if isinstance(result, pd.DataFrame):
-        result.to_csv('${outputPath}/${node.id}.csv', index=False)
-    else:
-        json.dump(result, open('${outputPath}/${node.id}.json', 'w'))
-
-    print("Task completed successfully")
-`;
 }
