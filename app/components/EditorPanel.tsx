@@ -113,43 +113,37 @@ export default function EditorPanel() {
         body: JSON.stringify({ graph })
       });
 
-      const deployResult: DeploymentResult = await response.json();
+      const deployResult = await response.json();
 
       if (!response.ok) {
         addNotification({
           type: 'error',
           title: 'Deployment Failed',
-          message: 'Failed to deploy pipeline'
+          message: deployResult.message || 'Failed to deploy pipeline'
         });
         setIsRunning(false);
         return;
       }
 
-      // Update node statuses based on deployment result
-      const levels = getExecutionLevels(graph);
-      const totalNodes = graph.nodes.length;
-      let completedNodes = 0;
-
-      for (const level of levels) {
-        // Set all nodes in this level to running
-        for (const nodeId of level) {
-          updateNodeStatus(nodeId, 'running');
-        }
-
-        // Simulate execution time (500ms per level)
-        await sleep(500);
-
-        // Complete all nodes in this level
-        for (const nodeId of level) {
-          const nodeResult = deployResult.nodes.find(n => n.id === nodeId);
-          if (nodeResult?.outputFileId) {
-            updateNodeFile(nodeId, nodeResult.outputFileId);
-          }
-          updateNodeStatus(nodeId, 'completed');
-          completedNodes++;
-          setRunProgress((completedNodes / totalNodes) * 100);
-        }
+      // Verify deployment completed successfully
+      if (deployResult.status !== 'completed') {
+        addNotification({
+          type: 'error',
+          title: 'Deployment Error',
+          message: deployResult.message || 'Deployment failed to complete'
+        });
+        setIsRunning(false);
+        return;
       }
+
+      // Update node statuses from the deployment result
+      const computeNodes = deployResult.nodes || [];
+      const computeNodeCount = graph.nodes.filter(n => n.type === 'compute').length;
+
+      computeNodes.forEach((nodeResult: any, index: number) => {
+        updateNodeStatus(nodeResult.id, nodeResult.status);
+        setRunProgress(((index + 1) / computeNodeCount) * 100);
+      });
 
       addNotification({
         type: 'success',
@@ -165,7 +159,7 @@ export default function EditorPanel() {
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, updateNodeFile, addNotification]);
+  }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification]);
 
   const handleReset = useCallback(() => {
     resetAllStatuses();
