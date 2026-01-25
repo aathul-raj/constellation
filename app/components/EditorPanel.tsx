@@ -559,8 +559,8 @@ export default function EditorPanel() {
           // Small delay before retry to let React update
           await new Promise(resolve => setTimeout(resolve, 500));
 
-          // Retry the deployment using stored endpoint
-          await runWithAutopilot(autopilotEndpointRef.current, autopilotTitleRef.current, true);
+          // Always retry locally for faster iteration (even if original was cloud deployment)
+          await runWithAutopilot('/api/deploy-local', 'Deploy Locally', true);
         } else {
           addChatMessage({
             role: 'assistant',
