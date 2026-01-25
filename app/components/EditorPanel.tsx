@@ -185,6 +185,10 @@ export default function EditorPanel() {
     resetAllStatuses();
     clearConsoleLogs();
 
+    // Set all compute nodes to "running" status before starting
+    const computeNodeIds = graph.nodes.filter(n => n.type === 'compute').map(n => n.id);
+    computeNodeIds.forEach(nodeId => updateNodeStatus(nodeId, 'running'));
+
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -207,6 +211,8 @@ export default function EditorPanel() {
       }
 
       if (!response.ok) {
+        // Set all running nodes to failed
+        computeNodeIds.forEach(nodeId => updateNodeStatus(nodeId, 'failed'));
         addNotification({
           type: 'error',
           title: 'Deployment Failed',
@@ -218,6 +224,8 @@ export default function EditorPanel() {
 
       // Verify deployment completed successfully
       if (deployResult.status !== 'completed') {
+        // Set all running nodes to failed
+        computeNodeIds.forEach(nodeId => updateNodeStatus(nodeId, 'failed'));
         addNotification({
           type: 'error',
           title: 'Deployment Error',
@@ -333,6 +341,8 @@ export default function EditorPanel() {
         message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
       });
     } catch (error) {
+      // Set all running nodes to failed
+      computeNodeIds.forEach(nodeId => updateNodeStatus(nodeId, 'failed'));
       addNotification({
         type: 'error',
         title: 'Execution Error',

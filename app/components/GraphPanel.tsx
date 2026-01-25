@@ -682,11 +682,15 @@ export default function GraphPanel() {
 
       <div className="graph-legend">
         <div className="legend-item">
+          <span className="legend-dot" style={{ backgroundColor: '#3b82f6' }} />
+          <span>Selected</span>
+        </div>
+        <div className="legend-item">
           <span className="legend-dot" style={{ backgroundColor: '#6b7280' }} />
           <span>Queued</span>
         </div>
         <div className="legend-item">
-          <span className="legend-dot" style={{ backgroundColor: '#3b82f6' }} />
+          <span className="legend-dot" style={{ backgroundColor: '#f59e0b' }} />
           <span>Running</span>
         </div>
         <div className="legend-item">

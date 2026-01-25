@@ -52,11 +52,11 @@ export function getStatusColor(status: NodeStatus, is3D?: boolean, isDark?: bool
       case 'queued':
         return '#52525b'; // Dark Gray
       case 'running':
-        return '#3b82f6'; // Blue (keep same)
+        return '#f59e0b'; // Amber/Yellow
       case 'completed':
-        return '#22c55e'; // Green (keep same)
+        return '#22c55e'; // Green
       case 'failed':
-        return '#ef4444'; // Red (keep same)
+        return '#ef4444'; // Red
       default:
         return '#52525b';
     }
@@ -67,7 +67,7 @@ export function getStatusColor(status: NodeStatus, is3D?: boolean, isDark?: bool
     case 'queued':
       return '#a1a1aa'; // Light Gray
     case 'running':
-      return '#3b82f6'; // Blue
+      return '#f59e0b'; // Amber/Yellow
     case 'completed':
       return '#22c55e'; // Green
     case 'failed':
