@@ -5,7 +5,7 @@ import { useHPCStore } from '../store/hpc-store';
 import { useSession } from 'next-auth/react';
 
 export default function AutoSave() {
-  const { graph, currentProjectId, currentProjectName, setSaveStatus, addNotification } = useHPCStore();
+  const { graph, chatMessages, currentProjectId, currentProjectName, setSaveStatus, addNotification } = useHPCStore();
   const { data: session } = useSession();
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastSavedGraphRef = useRef<string | null>(null);
@@ -16,10 +16,10 @@ export default function AutoSave() {
       return;
     }
 
-    const currentGraphString = JSON.stringify(graph);
+    const currentDataString = JSON.stringify({ graph, chatMessages });
 
     // Don't save if nothing changed
-    if (currentGraphString === lastSavedGraphRef.current) {
+    if (currentDataString === lastSavedGraphRef.current) {
       return;
     }
 
@@ -42,12 +42,13 @@ export default function AutoSave() {
           body: JSON.stringify({
             name: currentProjectName,
             graph,
+            chatMessages,
           }),
         });
 
         if (response.ok) {
           setSaveStatus('saved');
-          lastSavedGraphRef.current = currentGraphString;
+          lastSavedGraphRef.current = currentDataString;
 
           // Reset to idle after 2 seconds
           setTimeout(() => {
@@ -79,7 +80,7 @@ export default function AutoSave() {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [graph, currentProjectId, currentProjectName, session, setSaveStatus, addNotification]);
+  }, [graph, chatMessages, currentProjectId, currentProjectName, session, setSaveStatus, addNotification]);
 
   return null; // This is a logic-only component
 }

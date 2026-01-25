@@ -69,7 +69,7 @@ export async function PUT(
     }
 
     const body = await req.json();
-    const { name, graph } = body as { name?: string; graph?: HPCGraph };
+    const { name, graph, chatMessages } = body as { name?: string; graph?: HPCGraph; chatMessages?: any[] };
 
     const updateData: any = {
       updatedAt: Date.now(),
@@ -77,6 +77,7 @@ export async function PUT(
 
     if (name !== undefined) updateData.name = name;
     if (graph !== undefined) updateData.graph = graph;
+    if (chatMessages !== undefined) updateData.chatMessages = chatMessages;
 
     await docRef.update(updateData);
 

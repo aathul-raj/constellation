@@ -141,7 +141,9 @@ export default function EditorPanel() {
       const computeNodeCount = graph.nodes.filter(n => n.type === 'compute').length;
 
       computeNodes.forEach((nodeResult: any, index: number) => {
-        updateNodeStatus(nodeResult.id, nodeResult.status);
+        // Use nodeId if available (parallel execution), otherwise use id
+        const actualNodeId = nodeResult.nodeId || nodeResult.id;
+        updateNodeStatus(actualNodeId, nodeResult.status);
         setRunProgress(((index + 1) / computeNodeCount) * 100);
       });
 
@@ -149,22 +151,12 @@ export default function EditorPanel() {
       const outputNodeUpdates = deployResult.outputNodeUpdates || [];
 
       for (const update of outputNodeUpdates) {
-        if (update.csvContent) {
-          // Local deployment: CSV content is directly provided
-          updateNodeCsvData(update.nodeId, update.csvContent, `output-${Date.now()}.csv`);
-        } else if (update.s3Key) {
-          // AWS deployment: Fetch from S3
-          try {
-            const fileResponse = await fetch(`/api/files/${encodeURIComponent(update.s3Key)}`);
-            if (fileResponse.ok) {
-              const buffer = await fileResponse.arrayBuffer();
-              const decoder = new TextDecoder();
-              const csvContent = decoder.decode(buffer);
-              updateNodeCsvData(update.nodeId, csvContent, `output-${Date.now()}.csv`);
-            }
-          } catch (error) {
-            console.error(`Failed to fetch output file ${update.s3Key}:`, error);
-          }
+        if (update.s3Key) {
+          // Add the output file to the output-file node's files array
+          addNodeFile(update.nodeId, {
+            id: update.s3Key,
+            name: update.fileName || `output-${Date.now()}.csv`
+          });
         }
       }
 
@@ -232,34 +224,70 @@ export default function EditorPanel() {
         const uploadData = await uploadResponse.json();
 
         if (uploadResponse.ok) {
-          // Analyze the file
-          const analyzeFormData = new FormData();
-          analyzeFormData.append('file', file);
+          // Check if this is a ZIP file response (multiple files) or single file
+          if (uploadData.files && Array.isArray(uploadData.files)) {
+            // ZIP file - multiple CSVs extracted
+            for (const uploadedFile of uploadData.files) {
+              // Analyze each CSV
+              const analyzeFormData = new FormData();
 
-          const analyzeResponse = await fetch('/api/analyze-file', {
-            method: 'POST',
-            body: analyzeFormData
-          });
+              // Fetch the file from S3 to analyze it
+              const fileResponse = await fetch(`/api/files/${encodeURIComponent(uploadedFile.key)}`);
+              const fileBlob = await fileResponse.blob();
+              const csvFile = new File([fileBlob], uploadedFile.originalName, { type: 'text/csv' });
 
-          const metadata = await analyzeResponse.json();
+              analyzeFormData.append('file', csvFile);
 
-          // Add file to the node's files array
-          addNodeFile(selectedNodeId, {
-            id: uploadData.key,
-            name: file.name,
-            metadata: metadata
-          });
+              const analyzeResponse = await fetch('/api/analyze-file', {
+                method: 'POST',
+                body: analyzeFormData
+              });
 
-          addNotification({
-            type: 'success',
-            title: 'File Uploaded',
-            message: `${file.name} uploaded to AWS successfully`
-          });
+              const metadata = await analyzeResponse.json();
+
+              // Add file to the node's files array
+              addNodeFile(selectedNodeId, {
+                id: uploadedFile.key,
+                name: uploadedFile.originalName,
+                metadata: metadata
+              });
+            }
+
+            addNotification({
+              type: 'success',
+              title: 'ZIP Extracted',
+              message: `${uploadData.count} CSV file(s) uploaded from ${file.name}`
+            });
+          } else {
+            // Single CSV file
+            const analyzeFormData = new FormData();
+            analyzeFormData.append('file', file);
+
+            const analyzeResponse = await fetch('/api/analyze-file', {
+              method: 'POST',
+              body: analyzeFormData
+            });
+
+            const metadata = await analyzeResponse.json();
+
+            // Add file to the node's files array
+            addNodeFile(selectedNodeId, {
+              id: uploadData.key,
+              name: file.name,
+              metadata: metadata
+            });
+
+            addNotification({
+              type: 'success',
+              title: 'File Uploaded',
+              message: `${file.name} uploaded to AWS successfully`
+            });
+          }
         } else {
           addNotification({
             type: 'error',
             title: 'Upload Failed',
-            message: uploadData.error
+            message: uploadData.error || 'Failed to upload file'
           });
         }
       }
@@ -276,12 +304,14 @@ export default function EditorPanel() {
   }, [selectedNodeId, addNodeFile, addNotification]);
 
   const handleFileDownload = useCallback(() => {
-    if (!selectedNode?.fileId) return;
+    if (!selectedNode?.files || selectedNode.files.length === 0) return;
 
-    const url = `/api/files/${encodeURIComponent(selectedNode.fileId)}?download=true`;
+    // Download the first file
+    const file = selectedNode.files[0];
+    const url = `/api/files/${encodeURIComponent(file.id)}?download=true`;
     const link = document.createElement('a');
     link.href = url;
-    link.download = selectedNode.fileId;
+    link.download = file.name;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -433,7 +463,7 @@ export default function EditorPanel() {
                           </div>
                           <button
                             className="file-remove-btn"
-                            onClick={() => removeNodeFile(selectedNodeId, file.id)}
+                            onClick={() => removeNodeFile(selectedNode.id, file.id)}
                             title="Remove file"
                           >
                             <X size={14} />
@@ -446,7 +476,7 @@ export default function EditorPanel() {
               )}
               {selectedNode.type === 'output-file' && (
                 <div className="file-actions">
-                  {selectedNode.fileId ? (
+                  {selectedNode.files && selectedNode.files.length > 0 ? (
                     <>
                       <button
                         className="file-download-btn"
@@ -455,7 +485,16 @@ export default function EditorPanel() {
                         <Download size={14} />
                         <span>Download</span>
                       </button>
-                      <span className="file-indicator">{selectedNode.fileId}</span>
+                      <div className="uploaded-files-list">
+                        {selectedNode.files.map((file) => (
+                          <div key={file.id} className="file-item">
+                            <div className="file-item-info">
+                              <FileText size={14} />
+                              <span className="file-name">{file.name}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </>
                   ) : (
                     <span className="file-placeholder">No output file yet</span>
@@ -468,7 +507,9 @@ export default function EditorPanel() {
                 {/* Show input data schema */}
                 {(() => {
                   const inputNodes = graph.nodes.filter(n => selectedNode.in.includes(n.id));
-                  const inputsWithMetadata = inputNodes.filter(n => n.fileMetadata);
+                  const inputsWithMetadata = inputNodes.filter(n =>
+                    n.files && n.files.length > 0 && n.files[0].metadata
+                  );
 
                   if (inputsWithMetadata.length > 0) {
                     return (
@@ -477,20 +518,23 @@ export default function EditorPanel() {
                           <HardDrive size={14} />
                           <span>Input Data</span>
                         </div>
-                        {inputsWithMetadata.map((node, idx) => (
-                          <div key={node.id} className="schema-item">
-                            <strong>{node.name}:</strong>
-                            {node.fileMetadata?.columns && (
-                              <span className="schema-columns">
-                                {node.fileMetadata.columns.slice(0, 5).join(', ')}
-                                {node.fileMetadata.columns.length > 5 && ` +${node.fileMetadata.columns.length - 5} more`}
-                              </span>
-                            )}
-                            {node.fileMetadata?.rowCount && (
-                              <span className="schema-meta">({node.fileMetadata.rowCount} rows)</span>
-                            )}
-                          </div>
-                        ))}
+                        {inputsWithMetadata.map((node) => {
+                          const metadata = node.files?.[0]?.metadata;
+                          return (
+                            <div key={node.id} className="schema-item">
+                              <strong>{node.name}:</strong>
+                              {metadata?.columns && (
+                                <span className="schema-columns">
+                                  {metadata.columns.slice(0, 5).join(', ')}
+                                  {metadata.columns.length > 5 && ` +${metadata.columns.length - 5} more`}
+                                </span>
+                              )}
+                              {metadata?.rowCount && (
+                                <span className="schema-meta">({metadata.rowCount} rows)</span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     );
                   }

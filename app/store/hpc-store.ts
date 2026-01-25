@@ -92,6 +92,7 @@ interface HPCStore {
   setRunProgress: (progress: number) => void;
   toggleTheme: () => void;
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
+  setChatMessages: (messages: ChatMessage[]) => void;
   addNotification: (notification: Omit<Notification, 'id' | 'timestamp'>) => void;
   removeNotification: (id: string) => void;
   clearStore: () => void;
@@ -99,7 +100,7 @@ interface HPCStore {
   setSaveStatus: (status: 'idle' | 'saving' | 'saved' | 'error') => void;
 }
 
-const initialGraph: HPCGraph = {
+export const initialGraph: HPCGraph = {
   name: "Data Processing Pipeline",
   description: "Simple data processing workflow with input file, compute task, and output file",
   nodes: [
@@ -364,6 +365,10 @@ export const useHPCStore = create<HPCStore>()(
       }
     ]
   })),
+
+  setChatMessages: (messages) => set({
+    chatMessages: messages
+  }),
 
   addNotification: (notification) => set((state) => ({
     notifications: [
