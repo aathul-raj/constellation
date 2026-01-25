@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
     // Execute nodes level by level
     for (const level of executionLevels) {
       for (const nodeId of level) {
-        const node = nodeMap.get(nodeId);
+        const node = nodeMap.get(nodeId) as HPCNode | undefined;
         if (!node) continue;
 
         const result = nodeResults.get(nodeId)!;
