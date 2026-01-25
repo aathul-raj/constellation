@@ -1949,6 +1949,68 @@ body {
   background: var(--bg-secondary);
 }
 
+/* Virtualized CSV Viewer */
+.csv-virtual-container {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg-secondary);
+  position: relative;
+}
+
+.csv-virtual-content {
+  min-width: 100%;
+}
+
+.csv-virtual-header {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+.csv-virtual-row {
+  width: 100%;
+}
+
+.csv-virtual-row:nth-child(even) {
+  background: var(--bg-tertiary);
+}
+
+.csv-virtual-cell {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-sizing: border-box;
+  background: inherit;
+}
+
+.csv-virtual-cell.csv-header-cell {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.csv-virtual-cell.csv-row-number,
+.csv-virtual-cell.csv-row-number-header {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  justify-content: center;
+  border-left: none;
+  font-weight: 500;
+}
+
+.csv-virtual-cell.csv-row-number-header {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 /* Override react-spreadsheet styles to match theme */
 .Spreadsheet {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
