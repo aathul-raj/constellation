@@ -1,10 +1,29 @@
 'use client';
 
-import { Sun, Moon, Server, Activity, FolderOpen, LogOut } from 'lucide-react';
+import { Sun, Moon, Activity, FolderOpen, LogOut } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { useSession, signOut } from 'next-auth/react';
 import { useState } from 'react';
 import ProjectsModal from './ProjectsModal';
+import styles from '../login/landing.module.css';
+
+// Animated Logo Component
+function ConstellationLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={styles.constellationLogo}>
+      {/* Stars */}
+      <circle cx="12" cy="4" r="1.5" fill="currentColor" className={styles.logoStar} />
+      <circle cx="4" cy="12" r="1.5" fill="currentColor" className={styles.logoStar} style={{ animationDelay: '0.2s' }} />
+      <circle cx="20" cy="12" r="1.5" fill="currentColor" className={styles.logoStar} style={{ animationDelay: '0.4s' }} />
+      <circle cx="8" cy="20" r="1.5" fill="currentColor" className={styles.logoStar} style={{ animationDelay: '0.6s' }} />
+      <circle cx="16" cy="20" r="1.5" fill="currentColor" className={styles.logoStar} style={{ animationDelay: '0.8s' }} />
+      <circle cx="12" cy="12" r="2" fill="currentColor" className={styles.logoCenterStar} />
+      {/* Connections */}
+      <path d="M12 4L4 12M12 4L20 12M12 4L12 12M4 12L12 12M20 12L12 12M4 12L8 20M20 12L16 20M12 12L8 20M12 12L16 20M8 20L16 20"
+        stroke="currentColor" strokeWidth="1" className={styles.logoLines} />
+    </svg>
+  );
+}
 
 export default function Header() {
   const { theme, toggleTheme, graph, isRunning, currentProjectName, saveStatus } = useHPCStore();
@@ -18,7 +37,7 @@ export default function Header() {
     <header className="app-header">
       <div className="header-left">
         <div className="logo">
-          <Server size={24} />
+          <ConstellationLogo size={24} />
           <span>Constellation</span>
         </div>
         <div className="pipeline-name">

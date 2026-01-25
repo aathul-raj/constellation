@@ -1,12 +1,83 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Bot, User, Loader2, Trash2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import type { AIResponse, NodeCreationIntent, EditNodeIntent, GeneratePipelineIntent } from '../types/intent';
 import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
 import { fixGeneratedCode, extractInputParamName } from '../utils/code-fixer';
 import { nodeNameToParamName } from '../utils/signature-generator';
+
+// Simple Markdown renderer for chat messages
+function renderMarkdown(content: string): React.ReactNode {
+  const elements: React.ReactNode[] = [];
+  let key = 0;
+  
+  // Split by code blocks first (```...```)
+  const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match;
+  
+  const parts: Array<{ type: 'text' | 'codeblock'; content: string; language?: string }> = [];
+  
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', content: content.slice(lastIndex, match.index) });
+    }
+    parts.push({ type: 'codeblock', content: match[2], language: match[1] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < content.length) {
+    parts.push({ type: 'text', content: content.slice(lastIndex) });
+  }
+  
+  for (const part of parts) {
+    if (part.type === 'codeblock') {
+      elements.push(
+        <pre key={key++} className="markdown-codeblock">
+          <code>{part.content}</code>
+        </pre>
+      );
+    } else {
+      // Process inline markdown: **bold**, `code`, and line breaks
+      const lines = part.content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (i > 0) elements.push(<br key={key++} />);
+        
+        // Parse inline elements: **bold** and `code`
+        const inlineRegex = /(\*\*(.+?)\*\*)|(`([^`]+)`)/g;
+        let lineLastIndex = 0;
+        let inlineMatch;
+        const lineElements: React.ReactNode[] = [];
+        let lineKey = 0;
+        
+        while ((inlineMatch = inlineRegex.exec(line)) !== null) {
+          if (inlineMatch.index > lineLastIndex) {
+            lineElements.push(<span key={lineKey++}>{line.slice(lineLastIndex, inlineMatch.index)}</span>);
+          }
+          if (inlineMatch[2]) {
+            // Bold text
+            lineElements.push(<strong key={lineKey++}>{inlineMatch[2]}</strong>);
+          } else if (inlineMatch[4]) {
+            // Inline code
+            lineElements.push(<code key={lineKey++} className="markdown-inline-code">{inlineMatch[4]}</code>);
+          }
+          lineLastIndex = inlineMatch.index + inlineMatch[0].length;
+        }
+        if (lineLastIndex < line.length) {
+          lineElements.push(<span key={lineKey++}>{line.slice(lineLastIndex)}</span>);
+        }
+        
+        if (lineElements.length > 0) {
+          elements.push(<span key={key++}>{lineElements}</span>);
+        }
+      }
+    }
+  }
+  
+  return <>{elements}</>;
+}
 
 export default function AIChatPanel() {
   const {
@@ -944,7 +1015,7 @@ export default function AIChatPanel() {
               )}
             </div>
             <div className="message-content">
-              <pre>{message.content}</pre>
+              <div className="message-text">{renderMarkdown(message.content)}</div>
               <span className="message-time">
                 {message.timestamp.toLocaleTimeString([], {
                   hour: '2-digit',
@@ -970,7 +1041,7 @@ export default function AIChatPanel() {
               <Bot size={16} />
             </div>
             <div className="message-content">
-              <pre>{streamingMessage}<span className="cursor-blink">▊</span></pre>
+              <div className="message-text">{renderMarkdown(streamingMessage)}<span className="cursor-blink">▊</span></div>
             </div>
           </div>
         )}
