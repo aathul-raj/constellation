@@ -2,7 +2,7 @@
 
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp, FileText, X } from 'lucide-react';
+import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp, ChevronDown, FileText, X, Sparkles, Loader2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
 import { generateFunctionSignature } from '../utils/signature-generator';
@@ -58,6 +58,9 @@ export default function EditorPanel() {
   const [inputFileContent, setInputFileContent] = useState<string | null>(null);
   const [loadingInputFile, setLoadingInputFile] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [outputAnalysis, setOutputAnalysis] = useState<string | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisExpanded, setAnalysisExpanded] = useState(false);
   const consoleRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -597,6 +600,112 @@ export default function EditorPanel() {
     }
   }, [selectedNode, handleInputFileSelect]);
 
+  // Simple hash function for caching analysis
+  const hashString = useCallback((str: string): string => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return hash.toString(36);
+  }, []);
+
+  // Generate a cache key based on output node data and graph structure
+  const getAnalysisCacheKey = useCallback((nodeId: string, csvData: string, graphNodes: any[]) => {
+    // Include node ID, csv data hash, and relevant graph structure
+    const graphHash = hashString(JSON.stringify(graphNodes.map(n => ({
+      id: n.id,
+      name: n.name,
+      type: n.type,
+      in: n.in,
+      out: n.out,
+      code: n.code
+    }))));
+    const dataHash = hashString(csvData || '');
+    return `analysis-${nodeId}-${graphHash}-${dataHash}`;
+  }, [hashString]);
+
+  // Analyze output when output node is selected
+  const analyzeOutput = useCallback(async (forceRefresh = false) => {
+    if (!selectedNode || selectedNode.type !== 'output-file') return;
+
+    const outputData = selectedNode.csvData || '';
+    const cacheKey = getAnalysisCacheKey(selectedNode.id, outputData, graph.nodes);
+
+    // Check localStorage cache first (unless forcing refresh)
+    if (!forceRefresh) {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const { analysis, timestamp } = JSON.parse(cached);
+          // Use cache if it exists (no expiration for now)
+          setOutputAnalysis(analysis);
+          return;
+        }
+      } catch (e) {
+        // Ignore cache errors
+      }
+    }
+
+    setAnalysisLoading(true);
+    setOutputAnalysis(null);
+
+    try {
+      const response = await fetch('/api/analyze-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          graph,
+          outputNodeId: selectedNode.id,
+          outputData
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setOutputAnalysis(data.analysis);
+        
+        // Cache the result
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({
+            analysis: data.analysis,
+            timestamp: Date.now()
+          }));
+        } catch (e) {
+          // Ignore storage errors (quota exceeded, etc.)
+        }
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        setOutputAnalysis(null);
+        addNotification({
+          type: 'error',
+          title: 'Analysis Failed',
+          message: errorData.message || 'Could not analyze output'
+        });
+      }
+    } catch (error) {
+      setOutputAnalysis(null);
+      addNotification({
+        type: 'error',
+        title: 'Analysis Error',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, [selectedNode, graph, addNotification, getAnalysisCacheKey]);
+
+  // Auto-analyze when output node is selected and has data
+  useEffect(() => {
+    if (selectedNode?.type === 'output-file' && (selectedNode.csvData || (selectedNode.files && selectedNode.files.length > 0))) {
+      // Auto-analyze on first load of new output node (will use cache if available)
+      analyzeOutput();
+    } else {
+      setOutputAnalysis(null);
+    }
+  }, [selectedNode?.id, selectedNode?.csvData]);
+
   const handleConsoleResize = useCallback((e: MouseEvent) => {
     if (!isResizing) return;
 
@@ -840,6 +949,8 @@ export default function EditorPanel() {
                   )}
                 </div>
               )}
+
+
             </div>
             {selectedNode.type === 'compute' && (
               <>
@@ -994,6 +1105,52 @@ export default function EditorPanel() {
                     fileName={selectedNode.fileName || 'Output'}
                     onDownload={handleDownloadCSV}
                   />
+                )}
+
+                {/* AI Output Analysis - Full width section below CSV */}
+                {(outputAnalysis || analysisLoading) && (
+                  <div className={`output-analysis-inline ${analysisExpanded ? 'expanded' : 'collapsed'}`}>
+                    <button 
+                      className="analysis-inline-header"
+                      onClick={() => setAnalysisExpanded(!analysisExpanded)}
+                    >
+                      <Sparkles size={16} className="sparkle-icon" />
+                      <span>AI Analysis</span>
+                      {analysisLoading && <Loader2 size={14} className="loading-spinner" />}
+                      <ChevronDown size={16} className={`toggle-icon ${analysisExpanded ? 'expanded' : ''}`} />
+                    </button>
+                    {analysisExpanded && (
+                      <div className="analysis-inline-content">
+                        {analysisLoading ? (
+                          <div className="analysis-loading">
+                            <Loader2 size={18} className="loading-spinner" />
+                            <span>Analyzing pipeline and results...</span>
+                          </div>
+                        ) : (
+                          <div className="analysis-text">
+                            {outputAnalysis?.split('\n').map((line, idx) => {
+                              if (line.startsWith('**') && line.includes('**', 2)) {
+                                const headerText = line.match(/\*\*(.*?)\*\*/)?.[1] || line;
+                                return (
+                                  <div key={idx} className="analysis-section-header">
+                                    {headerText}
+                                  </div>
+                                );
+                              }
+                              if (line.trim()) {
+                                return (
+                                  <p key={idx} className="analysis-paragraph">
+                                    {line}
+                                  </p>
+                                );
+                              }
+                              return null;
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
               </>
             )}

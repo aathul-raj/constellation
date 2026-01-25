@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { X, Plus, Trash2, FolderOpen } from 'lucide-react';
 import { useHPCStore, initialGraph } from '../store/hpc-store';
+import { ConfirmationModal } from './ConfirmationModal';
 import styles from './ProjectsModal.module.css';
 
 interface Project {
@@ -25,6 +26,10 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
   const [creating, setCreating] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{
+    projectId: string;
+    projectName: string;
+  } | null>(null);
 
   useEffect(() => {
     loadProjects();
@@ -121,10 +126,15 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
     onClose();
   };
 
-  const handleDelete = async (projectId: string, projectName: string) => {
-    if (!confirm(`Delete "${projectName}"? This cannot be undone.`)) {
-      return;
-    }
+  const handleDeleteClick = (projectId: string, projectName: string) => {
+    setDeleteConfirmation({ projectId, projectName });
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteConfirmation) return;
+
+    const { projectId, projectName } = deleteConfirmation;
+    setDeleteConfirmation(null);
 
     try {
       const response = await fetch(`/api/projects/${projectId}`, {
@@ -248,7 +258,7 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
                       className={styles.deleteBtn}
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleDelete(project.id, project.name);
+                        handleDeleteClick(project.id, project.name);
                       }}
                     >
                       <Trash2 size={16} />
@@ -260,6 +270,15 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
           </div>
         </div>
       </div>
+
+      {deleteConfirmation && (
+        <ConfirmationModal
+          type="edge"
+          message={`Delete project "${deleteConfirmation.projectName}"? This cannot be undone.`}
+          onConfirm={handleDeleteConfirm}
+          onCancel={() => setDeleteConfirmation(null)}
+        />
+      )}
     </div>
   );
 }
