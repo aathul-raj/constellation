@@ -2,7 +2,7 @@
 
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp } from 'lucide-react';
+import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp, FileText, X } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
 import { generateFunctionSignature } from '../utils/signature-generator';
@@ -31,7 +31,8 @@ export default function EditorPanel() {
     updateNodeName,
     updateNodeCode,
     updateNodeStatus,
-    updateNodeFile,
+    addNodeFile,
+    removeNodeFile,
     updateNodeCsvData,
     clearNodeCsvData,
     markCsvAsUploaded,
@@ -202,88 +203,24 @@ export default function EditorPanel() {
   }, [resetAllStatuses, setRunProgress, addNotification]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!selectedNodeId || !e.target.files?.[0]) return;
+    if (!selectedNodeId || !e.target.files) return;
 
-    const file = e.target.files[0];
+    const files = Array.from(e.target.files);
+    setUploadingNodeId(selectedNodeId);
 
     try {
-      // For CSV files, load them locally and upload to AWS automatically
-      if (file.name.endsWith('.csv') || file.type === 'text/csv') {
-        const storageKey = `csv-edit-${selectedNodeId}`;
-
-        // Check if there's a saved version in localStorage
-        const savedData = localStorage.getItem(storageKey);
-        const fileContent = savedData || await file.text();
-
-        updateNodeCsvData(selectedNodeId, fileContent, file.name);
-
-        // Automatically upload to AWS
-        setUploadingNodeId(selectedNodeId);
-
-        const blob = new Blob([fileContent], { type: 'text/csv' });
-        const uploadFormData = new FormData();
-        uploadFormData.append('file', blob, file.name);
-
-        const uploadResponse = await fetch('/api/upload', {
-          method: 'POST',
-          body: uploadFormData
-        });
-
-        const uploadData = await uploadResponse.json();
-
-        if (uploadResponse.ok) {
-          // Analyze the file
-          const analyzeFormData = new FormData();
-          analyzeFormData.append('file', blob, file.name);
-
-          const analyzeResponse = await fetch('/api/analyze-file', {
-            method: 'POST',
-            body: analyzeFormData
-          });
-
-          const metadata = await analyzeResponse.json();
-
-          updateNodeFile(selectedNodeId, uploadData.key, metadata);
-
-          // Mark CSV as uploaded
-          markCsvAsUploaded(selectedNodeId);
-
-          if (savedData) {
-            addNotification({
-              type: 'success',
-              title: 'File Restored & Uploaded',
-              message: `${file.name} restored with your previous edits and uploaded to AWS.`
-            });
-          } else {
-            addNotification({
-              type: 'success',
-              title: 'File Uploaded',
-              message: `${file.name} uploaded to AWS successfully.`
-            });
-          }
-        } else {
+      for (const file of files) {
+        // Only accept CSV and ZIP files
+        if (!file.name.endsWith('.csv') && !file.name.endsWith('.zip')) {
           addNotification({
             type: 'error',
-            title: 'Upload Failed',
-            message: uploadData.error
+            title: 'Invalid File Type',
+            message: `${file.name} - Only CSV and ZIP files are supported`
           });
+          continue;
         }
 
-        setUploadingNodeId(null);
-      } else {
-        // For non-CSV files, upload directly
-        setUploadingNodeId(selectedNodeId);
-
-        const analyzeFormData = new FormData();
-        analyzeFormData.append('file', file);
-
-        const analyzeResponse = await fetch('/api/analyze-file', {
-          method: 'POST',
-          body: analyzeFormData
-        });
-
-        const metadata = await analyzeResponse.json();
-
+        // Upload to AWS
         const uploadFormData = new FormData();
         uploadFormData.append('file', file);
 
@@ -295,11 +232,28 @@ export default function EditorPanel() {
         const uploadData = await uploadResponse.json();
 
         if (uploadResponse.ok) {
-          updateNodeFile(selectedNodeId, uploadData.key, metadata);
+          // Analyze the file
+          const analyzeFormData = new FormData();
+          analyzeFormData.append('file', file);
+
+          const analyzeResponse = await fetch('/api/analyze-file', {
+            method: 'POST',
+            body: analyzeFormData
+          });
+
+          const metadata = await analyzeResponse.json();
+
+          // Add file to the node's files array
+          addNodeFile(selectedNodeId, {
+            id: uploadData.key,
+            name: file.name,
+            metadata: metadata
+          });
+
           addNotification({
             type: 'success',
             title: 'File Uploaded',
-            message: `${file.name} uploaded successfully`
+            message: `${file.name} uploaded to AWS successfully`
           });
         } else {
           addNotification({
@@ -319,7 +273,7 @@ export default function EditorPanel() {
       setUploadingNodeId(null);
       e.target.value = '';
     }
-  }, [selectedNodeId, updateNodeCsvData, updateNodeFile, addNotification]);
+  }, [selectedNodeId, addNodeFile, addNotification]);
 
   const handleFileDownload = useCallback(() => {
     if (!selectedNode?.fileId) return;
@@ -447,23 +401,48 @@ export default function EditorPanel() {
                 </span>
               </div>
               {selectedNode.type === 'input-file' && (
-                <div className="file-actions">
-                  {!selectedNode.csvData && (
+                <>
+                  <div className="file-upload-section">
                     <label className="file-upload-btn">
                       <Upload size={14} />
-                      <span>Upload File</span>
+                      <span>Upload Files</span>
                       <input
                         type="file"
+                        accept=".csv,.zip"
+                        multiple
                         onChange={handleFileUpload}
                         disabled={uploadingNodeId === selectedNodeId}
                         style={{ display: 'none' }}
                       />
                     </label>
+                    <span className="file-upload-hint">CSV or ZIP files</span>
+                  </div>
+                  {selectedNode.files && selectedNode.files.length > 0 && (
+                    <div className="uploaded-files-list">
+                      <div className="files-header">
+                        <span>Uploaded Files ({selectedNode.files.length})</span>
+                      </div>
+                      {selectedNode.files.map((file) => (
+                        <div key={file.id} className="file-item">
+                          <div className="file-item-info">
+                            <FileText size={14} />
+                            <span className="file-name">{file.name}</span>
+                            {file.metadata?.rowCount && (
+                              <span className="file-meta">{file.metadata.rowCount} rows</span>
+                            )}
+                          </div>
+                          <button
+                            className="file-remove-btn"
+                            onClick={() => removeNodeFile(selectedNodeId, file.id)}
+                            title="Remove file"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   )}
-                  {selectedNode.fileId && (
-                    <span className="file-indicator">{selectedNode.fileId}</span>
-                  )}
-                </div>
+                </>
               )}
               {selectedNode.type === 'output-file' && (
                 <div className="file-actions">

@@ -14,6 +14,12 @@ export interface FileMetadata {
   schema?: Record<string, string>;
 }
 
+export interface UploadedFile {
+  id: string; // S3 file ID
+  name: string; // Original file name
+  metadata?: FileMetadata; // Analysis of uploaded file
+}
+
 export interface HPCNode {
   id: string;
   name: string;
@@ -22,8 +28,7 @@ export interface HPCNode {
   code: string;
   in: string[];
   out: string[];
-  fileId?: string; // S3 file ID for input/output file nodes
-  fileMetadata?: FileMetadata; // Analysis of uploaded file
+  files?: UploadedFile[]; // Multiple uploaded files (for input-file nodes)
   csvData?: string; // Local CSV data for editing before upload
   fileName?: string; // Original file name
   lastUploadedCsvData?: string; // CSV data that was last uploaded to AWS
@@ -73,7 +78,8 @@ interface HPCStore {
   updateNodeName: (nodeId: string, name: string) => void;
   updateNodeCode: (nodeId: string, code: string) => void;
   updateNodeStatus: (nodeId: string, status: NodeStatus) => void;
-  updateNodeFile: (nodeId: string, fileId: string, metadata?: FileMetadata) => void;
+  addNodeFile: (nodeId: string, file: UploadedFile) => void;
+  removeNodeFile: (nodeId: string, fileId: string) => void;
   updateNodeCsvData: (nodeId: string, csvData: string, fileName?: string) => void;
   clearNodeCsvData: (nodeId: string) => void;
   markCsvAsUploaded: (nodeId: string) => void;
@@ -189,11 +195,26 @@ export const useHPCStore = create<HPCStore>()(
     }
   })),
 
-  updateNodeFile: (nodeId, fileId, metadata) => set((state) => ({
+  addNodeFile: (nodeId, file) => set((state) => ({
     graph: {
       ...state.graph,
       nodes: state.graph.nodes.map((node) =>
-        node.id === nodeId ? { ...node, fileId, fileMetadata: metadata } : node
+        node.id === nodeId ? {
+          ...node,
+          files: [...(node.files || []), file]
+        } : node
+      )
+    }
+  })),
+
+  removeNodeFile: (nodeId, fileId) => set((state) => ({
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === nodeId ? {
+          ...node,
+          files: (node.files || []).filter(f => f.id !== fileId)
+        } : node
       )
     }
   })),
