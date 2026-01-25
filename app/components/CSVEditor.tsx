@@ -8,9 +8,7 @@ interface CSVEditorProps {
   data: string;
   fileName: string;
   nodeId: string;
-  hasUnsavedChanges: boolean;
   onDataChange: (data: string) => void;
-  onUpload: () => void;
   onCancel: () => void;
   isUploading?: boolean;
 }
@@ -19,9 +17,7 @@ export default function CSVEditor({
   data,
   fileName,
   nodeId,
-  hasUnsavedChanges,
   onDataChange,
-  onUpload,
   onCancel,
   isUploading = false
 }: CSVEditorProps) {
@@ -111,21 +107,6 @@ export default function CSVEditor({
             <Download size={14} />
             <span>Save</span>
           </button>
-          <div className="csv-upload-btn-wrapper">
-            <button
-              className={`csv-upload-btn ${!hasUnsavedChanges ? 'no-changes' : ''}`}
-              onClick={onUpload}
-              disabled={isUploading}
-            >
-              <Upload size={14} />
-              <span>{isUploading ? 'Uploading...' : hasUnsavedChanges ? 'Upload to AWS' : 'Uploaded'}</span>
-            </button>
-            {!hasUnsavedChanges && !isUploading && (
-              <div className="csv-tooltip">
-                No changes since last upload. Click to upload anyway.
-              </div>
-            )}
-          </div>
           <button className="csv-cancel-btn" onClick={onCancel} disabled={isUploading}>
             <X size={14} />
             <span>Cancel</span>
