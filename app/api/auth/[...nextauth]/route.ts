@@ -18,27 +18,29 @@ const missingVars = Object.entries(requiredEnvVars)
   .map(([key]) => key);
 
 if (missingVars.length > 0) {
-  throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+  console.error(`⚠️  Missing required environment variables: ${missingVars.join(', ')}`);
+  console.error('⚠️  Authentication will not work until these are set.');
+  // Don't throw during build - let the app start but auth won't work
 }
 
 export const authOptions: AuthOptions = {
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: process.env.GOOGLE_CLIENT_ID || 'placeholder',
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'placeholder',
     }),
   ],
-  adapter: FirestoreAdapter({
+  adapter: process.env.FIREBASE_PROJECT_ID ? FirestoreAdapter({
     credential: cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
       // Replace literal \n with actual newlines
       privateKey: process.env.FIREBASE_PRIVATE_KEY?.split('\\n').join('\n'),
     }),
-  }),
+  }) : undefined,
   callbacks: {
     async session({ session, user }) {
-      if (session.user) {
+      if (session.user && user) {
         session.user.id = user.id;
       }
       return session;
@@ -47,7 +49,7 @@ export const authOptions: AuthOptions = {
   pages: {
     signIn: '/login',
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: process.env.NEXTAUTH_SECRET || 'development-secret-change-in-production',
 };
 
 const handler = NextAuth(authOptions);
