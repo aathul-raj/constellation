@@ -102,7 +102,7 @@ export default function EditorPanel() {
 
     try {
       // Deploy to backend
-      const response = await fetch('/api/deploy', {
+      const response = await fetch('/api/deploy-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ graph })
