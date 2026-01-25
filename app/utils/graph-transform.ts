@@ -48,7 +48,7 @@ export function transformToReagraph(graph: HPCGraph): ReagraphData {
 export function getStatusColor(status: NodeStatus): string {
   switch (status) {
     case 'queued':
-      return '#9ca3af'; // Light Gray
+      return '#909193'; // Light Gray
     case 'running':
       return '#3b82f6'; // Blue
     case 'completed':
@@ -56,7 +56,7 @@ export function getStatusColor(status: NodeStatus): string {
     case 'failed':
       return '#ef4444'; // Red
     default:
-      return '#9ca3af';
+      return '#73767b';
   }
 }
 

@@ -330,6 +330,21 @@ body {
   height: 100% !important;
 }
 
+/* Default cursor for canvas */
+.graph-container canvas {
+  cursor: default !important;
+}
+
+/* In delete mode, show pointer for all interactions */
+.graph-container.delete-mode canvas {
+  cursor: pointer !important;
+}
+
+/* Hand cursor only when hovering nodes - controlled by JS */
+.graph-container.hover-node canvas {
+  cursor: pointer !important;
+}
+
 .graph-container.loading {
   display: flex;
   flex-direction: column;
