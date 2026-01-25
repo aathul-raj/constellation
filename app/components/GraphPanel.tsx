@@ -680,7 +680,7 @@ export default function GraphPanel() {
         />
       </div>
 
-      {/* <div className="graph-legend">
+      <div className="graph-legend">
         <div className="legend-item">
           <span className="legend-dot" style={{ backgroundColor: '#6b7280' }} />
           <span>Queued</span>
@@ -697,7 +697,7 @@ export default function GraphPanel() {
           <span className="legend-dot" style={{ backgroundColor: '#ef4444' }} />
           <span>Failed</span>
         </div>
-      </div> */}
+      </div>
 
       <AddNodeModal
         isOpen={isAddNodeOpen}

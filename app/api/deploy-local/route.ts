@@ -455,12 +455,19 @@ export async function POST(request: NextRequest) {
         deploymentId,
         status: 'completed',
         message: 'Deployment completed successfully (local execution)',
-        nodes: Array.from(nodeResults.entries()).map(([nodeId, result]) => ({
-          id: nodeId,
-          name: (nodeMap.get(nodeId) as any)?.name || nodeId,
-          type: 'compute',
-          status: result.status
-        })),
+        nodes: Array.from(nodeResults.entries()).map(([resultKey, result]) => {
+          // resultKey format: "${nodeId}-${fileIndex}" - extract actual nodeId
+          const lastDashIndex = resultKey.lastIndexOf('-');
+          const actualNodeId = resultKey.substring(0, lastDashIndex);
+          return {
+            id: resultKey,
+            nodeId: actualNodeId,
+            name: (nodeMap.get(actualNodeId) as any)?.name || actualNodeId,
+            type: 'compute',
+            status: result.status,
+            fileIndex: result.fileIndex
+          };
+        }),
         outputFiles,
         outputNodeUpdates,
         consoleLogs,
