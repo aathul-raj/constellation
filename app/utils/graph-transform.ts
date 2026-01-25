@@ -45,10 +45,27 @@ export function transformToReagraph(graph: HPCGraph): ReagraphData {
   return { nodes, edges };
 }
 
-export function getStatusColor(status: NodeStatus): string {
+export function getStatusColor(status: NodeStatus, is3D?: boolean, isDark?: boolean): string {
+  // Light mode - use darker colors for visibility on light background
+  if (!isDark) {
+    switch (status) {
+      case 'queued':
+        return '#52525b'; // Dark Gray
+      case 'running':
+        return '#3b82f6'; // Blue (keep same)
+      case 'completed':
+        return '#22c55e'; // Green (keep same)
+      case 'failed':
+        return '#ef4444'; // Red (keep same)
+      default:
+        return '#52525b';
+    }
+  }
+
+  // Dark mode - use lighter colors for visibility on dark background
   switch (status) {
     case 'queued':
-      return '#909193'; // Light Gray
+      return '#a1a1aa'; // Light Gray
     case 'running':
       return '#3b82f6'; // Blue
     case 'completed':
@@ -56,7 +73,7 @@ export function getStatusColor(status: NodeStatus): string {
     case 'failed':
       return '#ef4444'; // Red
     default:
-      return '#73767b';
+      return '#a1a1aa';
   }
 }
 
