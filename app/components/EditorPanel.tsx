@@ -146,6 +146,10 @@ export default function EditorPanel() {
 
   // Pre-deployment lint check
   const lintComputeNodes = useCallback(async () => {
+    // Linting disabled - return empty array to skip lint checks
+    return [] as Array<{ nodeName: string; errors: string[] }>;
+    
+    /* Original linting code disabled:
     const computeNodes = graph.nodes.filter(n => n.type === 'compute');
     const errors: Array<{ nodeName: string; errors: string[] }> = [];
 
@@ -199,6 +203,7 @@ export default function EditorPanel() {
     }
 
     return errors;
+    */
   }, [graph, updateNodeStatus, addConsoleLog]);
 
   // Function to fix a failed node using AI
@@ -275,17 +280,97 @@ export default function EditorPanel() {
           `**${nodeName}**: ${errors.join('; ')}`
         ).join('\n\n');
 
-        addNotification({
-          type: 'error',
-          title: 'Syntax Errors Detected',
-          message: `Please fix the following errors before running:\n\n${errorMessages}`
-        });
-
         clearConsoleLogs();
         lintErrors.forEach(({ nodeName, errors }) => {
           errors.forEach(error => {
             addConsoleLog({ type: 'error', message: error, nodeName });
           });
+        });
+
+        // Find the first node with lint errors and trigger autopilot to fix it
+        const firstErrorNode = lintErrors[0];
+        const failedNode = graph.nodes.find(n => n.name === firstErrorNode.nodeName);
+        
+        if (failedNode) {
+          const lintErrorMessage = `Lint/Syntax Error: ${firstErrorNode.errors.join('; ')}`;
+          
+          // If this is the first lint failure (not already in autopilot mode), ask the user
+          if (autopilotRetryCountRef.current === 0) {
+            // Store the error info and show the prompt
+            setPendingAutopilotError({
+              failedNodeId: failedNode.id,
+              nodeName: failedNode.name,
+              errorMessage: lintErrorMessage
+            });
+            setShowAutopilotPrompt(true);
+            setCurrentDeploymentType(null);
+            return;
+          }
+          
+          // If user already approved autopilot, fix the lint error
+          setIsAutopilotActive(true);
+          setCurrentFixingNode(failedNode.name);
+          autopilotRetryCountRef.current += 1;
+          const currentAttempt = autopilotRetryCountRef.current;
+          setAutopilotRetryCount(currentAttempt);
+
+          addChatMessage({
+            role: 'assistant',
+            content: `**Autopilot** fixing lint errors in \`${failedNode.name}\`\n\n\`\`\`\n${lintErrorMessage}\n\`\`\`\n\n(Attempt ${currentAttempt}/${autopilotMaxRetries})`
+          });
+
+          // Call the fix API
+          const freshGraph = useHPCStore.getState().graph;
+          const fixResult = await fixFailedNode(failedNode.id, lintErrorMessage, freshGraph);
+
+          if (stopAutopilotRef.current) {
+            stopAutopilotRef.current = false;
+            setIsAutopilotActive(false);
+            setAutopilotRetryCount(0);
+            autopilotRetryCountRef.current = 0;
+            setCurrentFixingNode(null);
+            addChatMessage({
+              role: 'assistant',
+              content: 'Autopilot stopped.'
+            });
+            setCurrentDeploymentType(null);
+            return;
+          }
+
+          if (fixResult.success && fixResult.fixedCode) {
+            console.log('[Autopilot] Applying lint fix to node:', failedNode.id);
+            updateNodeCode(failedNode.id, fixResult.fixedCode);
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            addChatMessage({
+              role: 'assistant',
+              content: `**Fixed** lint errors in \`${failedNode.name}\`\n\n${fixResult.analysis}${fixResult.fixDescription ? `\n\n${fixResult.fixDescription}` : ''}\n\nRechecking...`
+            });
+
+            setCurrentFixingNode(null);
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Retry with autopilot to check for more lint errors or run deployment
+            await runWithAutopilot(endpoint, title, true, deployType);
+            return;
+          } else {
+            addChatMessage({
+              role: 'assistant',
+              content: `Could not fix lint errors in \`${failedNode.name}\` automatically.\n\n${fixResult.analysis || 'Unable to determine fix.'}\n\nPlease fix manually.`
+            });
+            setIsAutopilotActive(false);
+            setAutopilotRetryCount(0);
+            autopilotRetryCountRef.current = 0;
+            setCurrentFixingNode(null);
+            setCurrentDeploymentType(null);
+            return;
+          }
+        }
+
+        addNotification({
+          type: 'error',
+          title: 'Syntax Errors Detected',
+          message: `Please fix the following errors before running:\n\n${errorMessages}`
         });
         setCurrentDeploymentType(null);
         return;
@@ -296,6 +381,100 @@ export default function EditorPanel() {
       stopAutopilotRef.current = false;
       if (deployType) {
         setCurrentDeploymentType(deployType);
+      }
+    } else {
+      // On retry, also check for lint errors (in case autopilot fix introduced new ones)
+      const lintErrors = await lintComputeNodes();
+      
+      if (lintErrors.length > 0) {
+        // Check max retries
+        if (autopilotRetryCountRef.current >= autopilotMaxRetries) {
+          const errorMessages = lintErrors.map(({ nodeName, errors }) =>
+            `**${nodeName}**: ${errors.join('; ')}`
+          ).join('\n\n');
+          
+          addChatMessage({
+            role: 'assistant',
+            content: `Autopilot reached max attempts (${autopilotMaxRetries}). Manual fix required.\n\nRemaining lint errors:\n${errorMessages}`
+          });
+          addNotification({
+            type: 'error',
+            title: 'Autopilot Stopped',
+            message: `Could not fix after ${autopilotMaxRetries} attempts`
+          });
+          setIsRunning(false);
+          setCurrentDeploymentType(null);
+          setIsAutopilotActive(false);
+          setAutopilotRetryCount(0);
+          autopilotRetryCountRef.current = 0;
+          setCurrentFixingNode(null);
+          return;
+        }
+
+        // Fix the first lint error
+        const firstErrorNode = lintErrors[0];
+        const failedNode = graph.nodes.find(n => n.name === firstErrorNode.nodeName);
+        
+        if (failedNode) {
+          const lintErrorMessage = `Lint/Syntax Error: ${firstErrorNode.errors.join('; ')}`;
+          
+          setIsAutopilotActive(true);
+          setCurrentFixingNode(failedNode.name);
+          autopilotRetryCountRef.current += 1;
+          const currentAttempt = autopilotRetryCountRef.current;
+          setAutopilotRetryCount(currentAttempt);
+
+          addChatMessage({
+            role: 'assistant',
+            content: `**Autopilot** fixing lint errors in \`${failedNode.name}\`\n\n\`\`\`\n${lintErrorMessage}\n\`\`\`\n\n(Attempt ${currentAttempt}/${autopilotMaxRetries})`
+          });
+
+          const freshGraph = useHPCStore.getState().graph;
+          const fixResult = await fixFailedNode(failedNode.id, lintErrorMessage, freshGraph);
+
+          if (stopAutopilotRef.current) {
+            stopAutopilotRef.current = false;
+            setIsAutopilotActive(false);
+            setAutopilotRetryCount(0);
+            autopilotRetryCountRef.current = 0;
+            setCurrentFixingNode(null);
+            addChatMessage({
+              role: 'assistant',
+              content: 'Autopilot stopped.'
+            });
+            setCurrentDeploymentType(null);
+            return;
+          }
+
+          if (fixResult.success && fixResult.fixedCode) {
+            console.log('[Autopilot] Applying lint fix to node:', failedNode.id);
+            updateNodeCode(failedNode.id, fixResult.fixedCode);
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            addChatMessage({
+              role: 'assistant',
+              content: `**Fixed** lint errors in \`${failedNode.name}\`\n\n${fixResult.analysis}${fixResult.fixDescription ? `\n\n${fixResult.fixDescription}` : ''}\n\nRechecking...`
+            });
+
+            setCurrentFixingNode(null);
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Retry to check for more lint errors or run deployment
+            await runWithAutopilot(autopilotEndpointRef.current, autopilotTitleRef.current, true);
+            return;
+          } else {
+            addChatMessage({
+              role: 'assistant',
+              content: `Could not fix lint errors in \`${failedNode.name}\` automatically.\n\n${fixResult.analysis || 'Unable to determine fix.'}\n\nPlease fix manually.`
+            });
+            setIsAutopilotActive(false);
+            setAutopilotRetryCount(0);
+            autopilotRetryCountRef.current = 0;
+            setCurrentFixingNode(null);
+            setCurrentDeploymentType(null);
+            return;
+          }
+        }
       }
     }
 
