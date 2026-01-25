@@ -507,54 +507,31 @@ export default function EditorPanel() {
                 </span>
               </div>
               {selectedNode.type === 'input-file' && (
-                <>
-                  <div className="file-upload-section">
-                    <label className="file-upload-btn">
-                      <Upload size={14} />
-                      <span>Upload Files</span>
-                      <input
-                        type="file"
-                        accept=".csv,.zip"
-                        multiple
-                        onChange={handleFileUpload}
-                        disabled={uploadingNodeId === selectedNodeId}
-                        style={{ display: 'none' }}
-                      />
-                    </label>
-                    <span className="file-upload-hint">CSV or ZIP files</span>
-                  </div>
+                <div className="file-actions">
+                  <label className="file-upload-btn">
+                    <Upload size={14} />
+                    <span>Upload Files</span>
+                    <input
+                      type="file"
+                      accept=".csv,.zip"
+                      multiple
+                      onChange={handleFileUpload}
+                      disabled={uploadingNodeId === selectedNodeId}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
                   {selectedNode.files && selectedNode.files.length > 0 && (
-                    <div className="uploaded-files-list">
-                      <div className="files-header">
-                        <span>Uploaded Files ({selectedNode.files.length})</span>
-                      </div>
-                      {selectedNode.files.map((file) => (
-                        <div key={file.id} className="file-item">
-                          <div className="file-item-info">
-                            <FileText size={14} />
-                            <span className="file-name">{file.name}</span>
-                            {file.metadata?.rowCount && (
-                              <span className="file-meta">{file.metadata.rowCount} rows</span>
-                            )}
-                          </div>
-                          <button
-                            className="file-remove-btn"
-                            onClick={() => removeNodeFile(selectedNode.id, file.id)}
-                            title="Remove file"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
+                    <span className="file-upload-hint">
+                      {selectedNode.files.length} file{selectedNode.files.length > 1 ? 's' : ''} uploaded
+                    </span>
                   )}
-                </>
+                </div>
               )}
               {selectedNode.type === 'output-file' && (
                 <div className="file-actions">
                   {selectedNode.csvData || (selectedNode.files && selectedNode.files.length > 0) ? (
                     <>
-                      {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
+                      {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 && (
                         <button
                           className="file-download-btn"
                           onClick={handleDownloadAllAsZip}
@@ -563,35 +540,6 @@ export default function EditorPanel() {
                           <Download size={14} />
                           <span>Download All ({(window as any).__outputFiles[selectedNode.id].length} files)</span>
                         </button>
-                      ) : selectedNode.csvData ? (
-                        <button
-                          className="file-download-btn"
-                          onClick={handleDownloadCSV}
-                        >
-                          <Download size={14} />
-                          <span>Download CSV</span>
-                        </button>
-                      ) : null}
-                      {selectedNode.files && selectedNode.files.length > 0 && (
-                        <>
-                          <button
-                            className="file-download-btn"
-                            onClick={handleFileDownload}
-                          >
-                            <Download size={14} />
-                            <span>Download from S3</span>
-                          </button>
-                          <div className="uploaded-files-list">
-                            {selectedNode.files.map((file) => (
-                              <div key={file.id} className="file-item">
-                                <div className="file-item-info">
-                                  <FileText size={14} />
-                                  <span className="file-name">{file.name}</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </>
                       )}
                     </>
                   ) : (
@@ -600,6 +548,28 @@ export default function EditorPanel() {
                 </div>
               )}
             </div>
+            {selectedNode.type === 'input-file' && selectedNode.files && selectedNode.files.length > 0 && (
+              <div className="uploaded-files-list">
+                {selectedNode.files.map((file) => (
+                  <div key={file.id} className="file-item">
+                    <div className="file-item-info">
+                      <FileText size={14} />
+                      <span className="file-name">{file.name}</span>
+                      {file.metadata?.rowCount && (
+                        <span className="file-meta">{file.metadata.rowCount} rows</span>
+                      )}
+                    </div>
+                    <button
+                      className="file-remove-btn"
+                      onClick={() => removeNodeFile(selectedNode.id, file.id)}
+                      title="Remove file"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             {selectedNode.type === 'compute' && (
               <>
                 {/* Show input data schema */}

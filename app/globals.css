@@ -655,17 +655,6 @@ body {
   font-style: italic;
 }
 
-.file-upload-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  background: var(--bg-tertiary);
-  border: 1px dashed var(--border-color);
-  border-radius: 6px;
-  margin-bottom: 0.75rem;
-}
-
 .file-upload-hint {
   font-size: 0.6875rem;
   color: var(--text-muted);
@@ -675,21 +664,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.files-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 0.75rem;
+  padding: 0.75rem 1rem;
   background: var(--bg-tertiary);
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .file-item {
@@ -1465,7 +1442,6 @@ body {
 }
 
 /* CSV Viewer and Editor */
-.csv-viewer-container,
 .csv-editor-container {
   display: flex;
   flex-direction: column;
@@ -1672,10 +1648,6 @@ body {
   overflow: auto;
   padding: 1rem;
   background: var(--bg-secondary);
-}
-
-.csv-spreadsheet-wrapper.csv-read-only {
-  background: var(--bg-tertiary);
 }
 
 /* Override react-spreadsheet styles to match theme */
