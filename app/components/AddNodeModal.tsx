@@ -38,7 +38,7 @@ export function AddNodeModal({ isOpen, onClose, parentNodeId }: AddNodeModalProp
       name: name.trim(),
       type,
       status: 'queued',
-      code: type === 'compute' ? 'def task(input, output):\n    pass' : '',
+      code: type === 'compute' ? 'def task():  # do not edit this method header\n    # Your code here\n    pass\n\n    # return the output df\n    return None' : '',
       in: hasParent ? [parentNodeId!] : [],
       out: [],
     };

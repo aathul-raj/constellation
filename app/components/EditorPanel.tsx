@@ -5,6 +5,7 @@ import Editor from '@monaco-editor/react';
 import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
+import { generateFunctionSignature } from '../utils/signature-generator';
 import CSVEditor from './CSVEditor';
 import CSVViewer from './CSVViewer';
 
@@ -53,6 +54,36 @@ export default function EditorPanel() {
     }
     return node;
   }, [graph.nodes, selectedNodeId, editingName]);
+
+  // Auto-fix the signature when the graph connections change
+  const codeWithUpdatedSignature = useMemo(() => {
+    if (!selectedNode || selectedNode.type !== 'compute') {
+      return selectedNode?.code || '';
+    }
+
+    const currentSignature = generateFunctionSignature(selectedNode, graph);
+    const code = selectedNode.code;
+
+    // Find the existing def line
+    const lines = code.split('\n');
+    let defLineIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().startsWith('def task')) {
+        defLineIndex = i;
+        break;
+      }
+    }
+
+    // If signature matches or no def line found yet, return as-is
+    if (defLineIndex === -1 || lines[defLineIndex].trim() === currentSignature) {
+      return code;
+    }
+
+    // Replace the signature line with the new one
+    const updatedLines = [...lines];
+    updatedLines[defLineIndex] = currentSignature;
+    return updatedLines.join('\n');
+  }, [selectedNode, graph]);
 
   const handleCodeChange = useCallback((value: string | undefined) => {
     if (selectedNodeId && value !== undefined) {
@@ -461,7 +492,7 @@ export default function EditorPanel() {
                 <Editor
                   height="100%"
                   language="python"
-                  value={selectedNode.code}
+                  value={codeWithUpdatedSignature}
                   onChange={handleCodeChange}
                   theme={theme === 'dark' ? 'vs-dark' : 'light'}
                   options={{
