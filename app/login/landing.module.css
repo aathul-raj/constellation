@@ -1,45 +1,70 @@
 /* landing.module.css */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
-/* --- Tokens --- */
-:root {
+/* --- Tokens (Dark Mode Default) --- */
+.landing {
   /* Brand Palette */
   --brand-blue: #3b82f6;
   --brand-indigo: #6366f1;
   --brand-cyan: #06b6d4;
-  
+
   /* Surfaces */
-  --bg-root: #02040a; /* Deep void blue, not pure black */
-  --bg-surface: #0a0a11;
-  --bg-subtle: #13131f;
-  
+  --landing-bg-root: #02040a; /* Deep void blue, not pure black */
+  --landing-bg-surface: #0a0a11;
+  --landing-bg-subtle: #13131f;
+
   /* Borders */
-  --border-dim: rgba(59, 130, 246, 0.15); /* Blue-tinted border */
-  --border-highlight: rgba(59, 130, 246, 0.4);
-  
+  --landing-border-dim: rgba(59, 130, 246, 0.15); /* Blue-tinted border */
+  --landing-border-highlight: rgba(59, 130, 246, 0.4);
+
   /* Text */
-  --text-primary: #ffffff;
-  --text-secondary: #94a3b8; /* Slate-400 */
-  --text-accent: #60a5fa;
+  --landing-text-primary: #ffffff;
+  --landing-text-secondary: #94a3b8; /* Slate-400 */
+  --landing-text-accent: #60a5fa;
+
+  /* Code window */
+  --landing-code-bg: #050508;
+}
+
+/* --- Light Mode Overrides --- */
+:global([data-theme="light"]) .landing {
+  --landing-bg-root: #f8fafc;
+  --landing-bg-surface: #ffffff;
+  --landing-bg-subtle: #f1f5f9;
+
+  --landing-border-dim: rgba(59, 130, 246, 0.2);
+  --landing-border-highlight: rgba(59, 130, 246, 0.5);
+
+  --landing-text-primary: #0f172a;
+  --landing-text-secondary: #475569;
+  --landing-text-accent: #2563eb;
+
+  --landing-code-bg: #1e293b;
 }
 
 /* --- Global Layout --- */
 .landing {
-  background-color: var(--bg-root);
-  color: var(--text-primary);
+  background-color: var(--landing-bg-root);
+  color: var(--landing-text-primary);
   font-family: 'Inter', sans-serif;
   height: 100vh;
   width: 100%;
-  overflow-y: auto; 
+  overflow-y: auto;
   overflow-x: hidden;
   scroll-behavior: smooth;
-  
+
   /* Subtle blue grid */
-  background-image: 
+  background-image:
     radial-gradient(circle at 50% 0%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
     radial-gradient(rgba(59, 130, 246, 0.2) 1px, transparent 1px);
   background-size: 100% 100%, 32px 32px;
   background-attachment: local;
+}
+
+:global([data-theme="light"]) .landing {
+  background-image:
+    radial-gradient(circle at 50% 0%, rgba(56, 189, 248, 0.12) 0%, transparent 40%),
+    radial-gradient(rgba(59, 130, 246, 0.08) 1px, transparent 1px);
 }
 
 /* --- Loading --- */
@@ -49,13 +74,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-root);
+  background: var(--landing-bg-root);
 }
 
 .spinner {
   width: 24px;
   height: 24px;
-  border: 2px solid var(--border-dim);
+  border: 2px solid var(--landing-border-dim);
   border-top-color: var(--brand-blue);
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
@@ -73,7 +98,11 @@
   padding: 0 2rem;
   background: rgba(2, 4, 10, 0.85);
   backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border-dim);
+  border-bottom: 1px solid var(--landing-border-dim);
+}
+
+:global([data-theme="light"]) .nav {
+  background: rgba(248, 250, 252, 0.85);
 }
 
 .logoContainer {
@@ -83,7 +112,7 @@
   font-weight: 600;
   font-size: 1rem;
   letter-spacing: -0.02em;
-  color: var(--text-primary);
+  color: var(--landing-text-primary);
 }
 
 /* Logo Animation Styles */
@@ -165,7 +194,7 @@
   line-height: 1.1;
   font-weight: 600;
   letter-spacing: -0.04em;
-  color: var(--text-primary);
+  color: var(--landing-text-primary);
   margin-bottom: 1.5rem;
 }
 
@@ -178,7 +207,7 @@
 
 .heroDesc {
   font-size: 1.125rem;
-  color: var(--text-secondary);
+  color: var(--landing-text-secondary);
   line-height: 1.6;
   max-width: 580px;
   margin: 0 auto 3rem;
@@ -218,8 +247,8 @@
   height: 44px;
   padding: 0 1.5rem;
   background: rgba(255, 255, 255, 0.03);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-dim);
+  color: var(--landing-text-secondary);
+  border: 1px solid var(--landing-border-dim);
   border-radius: 6px;
   font-weight: 500;
   font-size: 0.875rem;
@@ -230,9 +259,13 @@
   transition: all 0.2s;
 }
 
+:global([data-theme="light"]) .secondaryBtn {
+  background: rgba(0, 0, 0, 0.03);
+}
+
 .secondaryBtn:hover {
   border-color: var(--brand-blue);
-  color: var(--text-primary);
+  color: var(--landing-text-primary);
   background: rgba(59, 130, 246, 0.05);
 }
 
@@ -241,7 +274,7 @@
   padding: 6rem 1.5rem;
   max-width: 1100px;
   margin: 0 auto;
-  border-top: 1px dashed var(--border-dim);
+  border-top: 1px dashed var(--landing-border-dim);
 }
 
 .sectionHeader {
@@ -262,6 +295,59 @@
   font-weight: 600;
   letter-spacing: -0.03em;
   margin-bottom: 0.5rem;
+  color: var(--landing-text-primary);
+}
+
+/* --- Pipeline Steps Grid --- */
+.pipelineStepsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  border: 1px solid var(--landing-border-dim);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+}
+
+:global([data-theme="light"]) .pipelineStepsGrid {
+  background: rgba(0,0,0,0.02);
+}
+
+.pipelineStep {
+  padding: 2rem;
+  border-left: 1px solid var(--landing-border-dim);
+}
+
+.pipelineStep:first-child {
+  border-left: none;
+}
+
+@media (max-width: 900px) {
+  .pipelineStep {
+    border-left: none;
+    border-top: 1px solid var(--landing-border-dim);
+  }
+  .pipelineStep:first-child {
+    border-top: none;
+  }
+}
+
+.pipelineStepNumber {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--landing-text-accent);
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.pipelineStepTitle {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--landing-text-primary);
+}
+
+.pipelineStepDesc {
+  font-size: 0.875rem;
+  color: var(--landing-text-secondary);
+  line-height: 1.6;
 }
 
 /* --- Code/Terminal Demo --- */
@@ -270,8 +356,8 @@
   gap: 2rem;
   align-items: center;
   justify-content: center;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-dim);
+  background: var(--landing-bg-subtle);
+  border: 1px solid var(--landing-border-dim);
   border-radius: 12px;
   padding: 3rem;
   position: relative;
@@ -294,8 +380,8 @@
 .codeWindow {
   flex: 1;
   max-width: 480px;
-  background: #050508;
-  border: 1px solid var(--border-dim);
+  background: var(--landing-code-bg);
+  border: 1px solid var(--landing-border-dim);
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 20px 40px rgba(0,0,0,0.4);
@@ -319,13 +405,13 @@
   justify-content: space-between;
   padding: 0.625rem 1rem;
   background: rgba(255, 255, 255, 0.03);
-  border-bottom: 1px solid var(--border-dim);
+  border-bottom: 1px solid var(--landing-border-dim);
 }
 
 .windowTitle {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: var(--landing-text-secondary);
 }
 
 .active .windowTitle {
@@ -340,14 +426,15 @@
   min-height: 160px;
 }
 
+/* Code window content - always dark for code readability */
 .promptText { color: #e2e8f0; }
 .pythonText { color: #94a3b8; }
-.pythonKeyword { color: #c084fc; } /* Purple for keywords */
-.pythonString { color: #60a5fa; } /* Blue for strings */
-.pythonFunc { color: #facc15; } /* Yellow for functions */
+.pythonKeyword { color: #c084fc; }
+.pythonString { color: #60a5fa; }
+.pythonFunc { color: #facc15; }
 
 .transformIcon {
-  color: var(--border-highlight);
+  color: var(--landing-border-highlight);
   z-index: 1;
 }
 
@@ -356,14 +443,14 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 1px;
-  background: var(--border-dim);
-  border: 1px solid var(--border-dim);
+  background: var(--landing-border-dim);
+  border: 1px solid var(--landing-border-dim);
   border-radius: 12px;
   overflow: hidden;
 }
 
 .bentoCard {
-  background: var(--bg-surface);
+  background: var(--landing-bg-surface);
   padding: 2rem;
   display: flex;
   flex-direction: column;
@@ -372,7 +459,7 @@
 }
 
 .bentoCard:hover {
-  background: var(--bg-subtle);
+  background: var(--landing-bg-subtle);
 }
 
 .bentoIcon {
@@ -390,20 +477,20 @@
 .bentoCard h3 {
   font-size: 0.9375rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--landing-text-primary);
 }
 
 .bentoCard p {
   font-size: 0.8125rem;
-  color: var(--text-secondary);
+  color: var(--landing-text-secondary);
   line-height: 1.5;
 }
 
 /* --- Footer --- */
 .footer {
   padding: 4rem 1.5rem;
-  border-top: 1px solid var(--border-dim);
-  background: var(--bg-surface);
+  border-top: 1px solid var(--landing-border-dim);
+  background: var(--landing-bg-surface);
   text-align: center;
 }
 
@@ -414,12 +501,12 @@
   gap: 10px;
   font-weight: 600;
   margin-bottom: 1rem;
-  color: var(--text-primary);
+  color: var(--landing-text-primary);
 }
 
 .footerCredits {
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: var(--landing-text-secondary);
 }
 
 /* --- Animation Utilities --- */
