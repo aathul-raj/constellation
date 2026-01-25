@@ -135,7 +135,7 @@ export const useHPCStore = create<HPCStore>((set, get) => ({
     {
       id: '1',
       role: 'assistant',
-      content: 'HPC Orchestrator ready. Select a node to view its job script, or click "Run" to execute the pipeline.',
+      content: 'Constellation ready. Select a node to view its job script, modify the graph, or click "Run" to execute the pipeline.',
       timestamp: new Date()
     }
   ],

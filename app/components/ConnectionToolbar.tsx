@@ -53,17 +53,17 @@ export function ConnectionToolbar({
       </div>
 
       <div className={styles.actions}>
+        <button className={styles.cancelBtn} onClick={onCancel}>
+          Cancel
+        </button>
         {isComplete && (
           <button className={styles.addBtn} onClick={onAddConnection}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M5 12h14M12 5v14" />
             </svg>
-            Add Connection
+            Connection
           </button>
         )}
-        <button className={styles.cancelBtn} onClick={onCancel}>
-          Cancel
-        </button>
       </div>
     </div>
   );

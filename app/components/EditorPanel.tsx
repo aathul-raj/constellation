@@ -1,13 +1,14 @@
 'use client';
 
-import { useMemo, useCallback, useState } from 'react';
+import { useMemo, useCallback, useState, useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download } from 'lucide-react';
+import { Play, RotateCcw, Terminal, Cpu, HardDrive, Upload, Download, ChevronUp } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
 import { getExecutionLevels } from '../utils/graph-transform';
 import { generateFunctionSignature } from '../utils/signature-generator';
 import CSVEditor from './CSVEditor';
 import CSVViewer from './CSVViewer';
+import DebugConsole from './DebugConsole';
 
 interface DeploymentResult {
   deploymentId: string;
@@ -46,6 +47,10 @@ export default function EditorPanel() {
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [consoleHeight, setConsoleHeight] = useState(250); // Default ~1/3 of typical screen
+  const [isResizing, setIsResizing] = useState(false);
+  const consoleRef = useRef<HTMLDivElement>(null);
 
   const selectedNode = useMemo(() => {
     const node = graph.nodes.find(n => n.id === selectedNodeId);
@@ -349,6 +354,42 @@ export default function EditorPanel() {
     }
   }, [handleSaveName]);
 
+  const handleConsoleResize = useCallback((e: MouseEvent) => {
+    if (!isResizing) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const editorPanel = document.querySelector('.editor-panel');
+    if (!editorPanel) return;
+
+    const panelRect = editorPanel.getBoundingClientRect();
+    const newHeight = panelRect.bottom - e.clientY - 80; // Account for footer height
+    const minHeight = 100;
+    const maxHeight = panelRect.height - 300; // Leave room for editor content
+
+    setConsoleHeight(Math.max(minHeight, Math.min(newHeight, maxHeight)));
+  }, [isResizing]);
+
+  const handleConsoleResizeEnd = useCallback(() => {
+    setIsResizing(false);
+  }, []);
+
+  useEffect(() => {
+    if (isResizing) {
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'row-resize';
+      document.addEventListener('mousemove', handleConsoleResize);
+      document.addEventListener('mouseup', handleConsoleResizeEnd);
+      return () => {
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', handleConsoleResize);
+        document.removeEventListener('mouseup', handleConsoleResizeEnd);
+      };
+    }
+  }, [isResizing, handleConsoleResize, handleConsoleResizeEnd]);
+
   const getTypeIcon = (type: string) => {
     switch (type) {
       case 'input-file':
@@ -551,6 +592,25 @@ export default function EditorPanel() {
         )}
       </div>
 
+      {consoleOpen && (
+        <>
+          <div
+            className="console-resize-handle"
+            onMouseDown={() => setIsResizing(true)}
+          />
+          <div
+            ref={consoleRef}
+            className="debug-console-wrapper"
+            style={{ height: `${consoleHeight}px` }}
+          >
+            <DebugConsole
+              isOpen={consoleOpen}
+              onClose={() => setConsoleOpen(false)}
+            />
+          </div>
+        </>
+      )}
+
       <div className="editor-footer">
         <div className="progress-bar-container">
           <div
@@ -559,6 +619,15 @@ export default function EditorPanel() {
           />
         </div>
         <div className="footer-actions">
+          {!consoleOpen && (
+            <button
+              className="btn btn-console"
+              onClick={() => setConsoleOpen(true)}
+            >
+              <ChevronUp size={16} />
+              Debug Console
+            </button>
+          )}
           <button
             className="btn btn-secondary"
             onClick={handleReset}
