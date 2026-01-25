@@ -45,18 +45,18 @@ export default function CSVViewer({ data, fileName, onDownload }: CSVViewerProps
     <div className="csv-viewer-container">
       <div className="csv-header">
         <div className="csv-info">
-          <h3>{fileName}</h3>
+          <h3 className="csv-filename">{fileName}</h3>
           <span className="row-count">{rowCount} rows, {columnCount} columns</span>
         </div>
         <div className="csv-actions">
           <button className="csv-save-btn" onClick={handleSaveToComputer}>
             <Download size={14} />
-            <span>Save to Computer</span>
+            <span>Download</span>
           </button>
-          <button className="csv-download-btn" onClick={onDownload}>
+          {/* <button className="csv-download-btn" onClick={onDownload}>
             <Download size={14} />
-            <span>Download from AWS</span>
-          </button>
+            <span>Download</span>
+          </button> */}
         </div>
       </div>
 
