@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { useHPCStore } from '../store/hpc-store';
-import type { AIResponse, NodeCreationIntent } from '../types/intent';
+import type { AIResponse, NodeCreationIntent, EditNodeIntent } from '../types/intent';
 import { validateNodeCreationIntent, extractNodeContext, isReadyForNodeCreation } from '../utils/intent-validator';
 import { fixGeneratedCode, extractInputParamName } from '../utils/code-fixer';
 import { nodeNameToParamName } from '../utils/signature-generator';
@@ -20,7 +20,8 @@ export default function AIChatPanel() {
     selectNode,
     createNode,
     connectNodes,
-    disconnectNodes
+    disconnectNodes,
+    updateNodeConnections
   } = useHPCStore();
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -290,6 +291,96 @@ export default function AIChatPanel() {
           break;
         }
 
+        case 'edit_node': {
+          const targetNodeId = data.nodeId || selectedNodeId;
+          const targetNode = targetNodeId ? graph.nodes.find(n => n.id === targetNodeId) : null;
+
+          if (!targetNode) {
+            const msg = 'Please select a node to edit or specify which node you want to modify.';
+            streamText(msg, () => {
+              addChatMessage({
+                role: 'assistant',
+                content: msg
+              });
+            });
+            break;
+          }
+
+          // Handle connection changes if specified
+          const resolveConnectionIds = (connections?: string[]) =>
+            connections
+              ?.map((connId) => {
+                const connNode = graph.nodes.find(
+                  n => n.id === connId || n.name.toLowerCase() === connId.toLowerCase()
+                );
+                return connNode?.id;
+              })
+              .filter((id): id is string => id !== undefined);
+
+          const resolvedNewIn = resolveConnectionIds(data.newInConnections);
+          const resolvedNewOut = resolveConnectionIds(data.newOutConnections);
+          const resolvedAddIn = resolveConnectionIds(data.addInConnections);
+          const resolvedAddOut = resolveConnectionIds(data.addOutConnections);
+          const resolvedRemoveIn = resolveConnectionIds(data.removeInConnections);
+          const resolvedRemoveOut = resolveConnectionIds(data.removeOutConnections);
+
+          if (resolvedNewIn !== undefined || resolvedNewOut !== undefined) {
+            // Replace connections only when explicitly provided
+            updateNodeConnections(targetNodeId, resolvedNewIn, resolvedNewOut);
+          }
+
+          if (resolvedAddIn?.length) {
+            resolvedAddIn.forEach((sourceId) => connectNodes(sourceId, targetNodeId));
+          }
+
+          if (resolvedAddOut?.length) {
+            resolvedAddOut.forEach((targetId) => connectNodes(targetNodeId, targetId));
+          }
+
+          if (resolvedRemoveIn?.length) {
+            resolvedRemoveIn.forEach((sourceId) => disconnectNodes(sourceId, targetNodeId));
+          }
+
+          if (resolvedRemoveOut?.length) {
+            resolvedRemoveOut.forEach((targetId) => disconnectNodes(targetNodeId, targetId));
+          }
+
+          // Handle code changes if specified
+          if (data.newCode && targetNode.type === 'compute') {
+            // Determine the input parameter name from parent nodes
+            const parentNode = targetNode.in.length > 0
+              ? graph.nodes.find(n => n.id === targetNode.in[0])
+              : null;
+
+            const inputParamName = parentNode
+              ? nodeNameToParamName(parentNode.name)
+              : 'input';
+
+            // Fix the generated code to use correct variable references
+            const fixedCode = fixGeneratedCode(data.newCode, inputParamName);
+            updateNodeCode(targetNodeId, fixedCode);
+          }
+
+          // Update parallelization if provided
+          if (data.parallelization) {
+            updateNodeParallelization(targetNodeId, data.parallelization);
+          }
+
+          const msg = data.message || `Updated node "${targetNode.name}".`;
+          streamText(msg, () => {
+            addChatMessage({
+              role: 'assistant',
+              content: msg
+            });
+          });
+
+          // Select the edited node so user can see the changes
+          if (targetNodeId !== selectedNodeId) {
+            selectNode(targetNodeId);
+          }
+          break;
+        }
+
         case 'chat':
         default:
           const msg = data.message || 'I understood your request but have no specific action to take.';
@@ -312,7 +403,7 @@ export default function AIChatPanel() {
     } finally {
       setIsTyping(false);
     }
-  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, updateNodeParallelization, selectNode, createNode, streamText]);
+  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, updateNodeParallelization, selectNode, createNode, connectNodes, disconnectNodes, updateNodeConnections, streamText]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

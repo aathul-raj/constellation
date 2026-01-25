@@ -87,6 +87,7 @@ interface HPCStore {
   createNode: (nodeType: 'input-file' | 'compute' | 'output-file', nodeName: string, parentNodeId?: string, pythonCode?: string) => string;
   connectNodes: (sourceId: string, targetId: string) => void;
   disconnectNodes: (sourceId: string, targetId: string) => void;
+  updateNodeConnections: (nodeId: string, newInConnections?: string[], newOutConnections?: string[]) => void;
   resetAllStatuses: () => void;
   setIsRunning: (running: boolean) => void;
   setRunProgress: (progress: number) => void;
@@ -334,6 +335,86 @@ export const useHPCStore = create<HPCStore>()(
       }
       return node;
     });
+
+    return {
+      graph: { ...state.graph, nodes: updatedNodes }
+    };
+  }),
+
+  updateNodeConnections: (nodeId, newInConnections, newOutConnections) => set((state) => {
+    const targetNode = state.graph.nodes.find(n => n.id === nodeId);
+    if (!targetNode) return {};
+
+    // Validate that all connection IDs exist in the graph
+    const validNodeIds = new Set(state.graph.nodes.map(n => n.id));
+
+    let validInConnections = newInConnections;
+    let validOutConnections = newOutConnections;
+
+    // Filter out any non-existent node references
+    if (newInConnections !== undefined) {
+      validInConnections = newInConnections.filter(id => validNodeIds.has(id));
+    }
+    if (newOutConnections !== undefined) {
+      validOutConnections = newOutConnections.filter(id => validNodeIds.has(id));
+    }
+
+    // Get old connections to remove them from both sides
+    const oldInConnections = targetNode.in || [];
+    const oldOutConnections = targetNode.out || [];
+
+    let updatedNodes = [...state.graph.nodes];
+
+    // Update the target node with new connections
+    updatedNodes = updatedNodes.map(node => {
+      if (node.id === nodeId) {
+        const updates: any = { ...node };
+        if (validInConnections !== undefined) {
+          updates.in = validInConnections;
+        }
+        if (validOutConnections !== undefined) {
+          updates.out = validOutConnections;
+        }
+        return updates;
+      }
+      return node;
+    });
+
+    // Clean up old outgoing connections (remove nodeId from their 'in' arrays)
+    if (validOutConnections !== undefined) {
+      updatedNodes = updatedNodes.map(node => {
+        if (oldOutConnections.includes(node.id) && !validOutConnections.includes(node.id)) {
+          return { ...node, in: node.in.filter(id => id !== nodeId) };
+        }
+        return node;
+      });
+
+      // Add new outgoing connections (add nodeId to their 'in' arrays)
+      updatedNodes = updatedNodes.map(node => {
+        if (validOutConnections.includes(node.id) && !oldOutConnections.includes(node.id)) {
+          return { ...node, in: [...node.in, nodeId] };
+        }
+        return node;
+      });
+    }
+
+    // Clean up old incoming connections (remove nodeId from their 'out' arrays)
+    if (validInConnections !== undefined) {
+      updatedNodes = updatedNodes.map(node => {
+        if (oldInConnections.includes(node.id) && !validInConnections.includes(node.id)) {
+          return { ...node, out: node.out.filter(id => id !== nodeId) };
+        }
+        return node;
+      });
+
+      // Add new incoming connections (add nodeId to their 'out' arrays)
+      updatedNodes = updatedNodes.map(node => {
+        if (validInConnections.includes(node.id) && !oldInConnections.includes(node.id)) {
+          return { ...node, out: [...node.out, nodeId] };
+        }
+        return node;
+      });
+    }
 
     return {
       graph: { ...state.graph, nodes: updatedNodes }
