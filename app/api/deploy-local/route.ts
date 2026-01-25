@@ -10,9 +10,10 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-// AWS Configuration
+// Configuration
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || 'hpc-pipeline-bucket';
+const PYTHON_VERSION = process.env.PYTHON_VERSION || 'python3.11';
 
 const s3Client = new S3Client({
   region: REGION,
@@ -194,7 +195,7 @@ export async function POST(request: NextRequest) {
 
           // Execute the Python script
           console.log(`[${deploymentId}] Running task for ${node.name}...`);
-          const { stdout, stderr } = await execFileAsync('python3.11', [scriptPath], {
+          const { stdout, stderr } = await execFileAsync(PYTHON_VERSION, [scriptPath], {
             env,
             maxBuffer: 10 * 1024 * 1024, // 10MB buffer
           });
