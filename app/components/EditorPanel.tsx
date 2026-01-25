@@ -51,6 +51,7 @@ export default function EditorPanel() {
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(250); // Default ~1/3 of typical screen
   const [isResizing, setIsResizing] = useState(false);
+  const [selectedOutputFileIndex, setSelectedOutputFileIndex] = useState(0);
   const consoleRef = useRef<HTMLDivElement>(null);
 
   const selectedNode = useMemo(() => {
@@ -150,13 +151,45 @@ export default function EditorPanel() {
       // Handle output file updates for output-file nodes
       const outputNodeUpdates = deployResult.outputNodeUpdates || [];
 
+      // Group updates by nodeId to handle multiple files per node
+      const updatesByNode = new Map<string, typeof outputNodeUpdates>();
       for (const update of outputNodeUpdates) {
-        if (update.s3Key) {
-          // Add the output file to the output-file node's files array
-          addNodeFile(update.nodeId, {
-            id: update.s3Key,
-            name: update.fileName || `output-${Date.now()}.csv`
-          });
+        if (!updatesByNode.has(update.nodeId)) {
+          updatesByNode.set(update.nodeId, []);
+        }
+        updatesByNode.get(update.nodeId)!.push(update);
+      }
+
+      // Process each output node
+      for (const [nodeId, updates] of updatesByNode) {
+        if (updates[0].s3Key) {
+          // AWS deployment - add S3 file references
+          for (const update of updates) {
+            addNodeFile(nodeId, {
+              id: update.s3Key,
+              name: update.fileName || `output-${Date.now()}.csv`
+            });
+          }
+        } else if (updates[0].csvContent) {
+          // Local deployment - store all CSV files in a special property
+          // For now, just show the first file's content in the viewer
+          updateNodeCsvData(nodeId, updates[0].csvContent, updates[0].fileName || 'output.csv');
+          
+          // Store all output files for zip download
+          if (updates.length > 1) {
+            // Store reference to all files in the node (we'll add this to the store)
+            (window as any).__outputFiles = (window as any).__outputFiles || {};
+            (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
+              fileName: u.fileName,
+              content: u.csvContent
+            }));
+            
+            addNotification({
+              type: 'info',
+              title: 'Multiple Output Files',
+              message: `Generated ${updates.length} output files. Click "Download All" to get a zip file.`
+            });
+          }
         }
       }
 
@@ -330,6 +363,49 @@ export default function EditorPanel() {
     URL.revokeObjectURL(link.href);
   }, [selectedNode]);
 
+  const handleDownloadAllAsZip = useCallback(async () => {
+    if (!selectedNode) return;
+
+    // Get all output files for this node
+    const outputFiles = (window as any).__outputFiles?.[selectedNode.id];
+    if (!outputFiles || outputFiles.length === 0) return;
+
+    try {
+      // Dynamically import JSZip
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+
+      // Add all files to the zip
+      outputFiles.forEach((file: any) => {
+        zip.file(file.fileName, file.content);
+      });
+
+      // Generate the zip file
+      const blob = await zip.generateAsync({ type: 'blob' });
+
+      // Download the zip
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `${selectedNode.name}-outputs.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+
+      addNotification({
+        type: 'success',
+        title: 'Download Complete',
+        message: `Downloaded ${outputFiles.length} files as ${selectedNode.name}-outputs.zip`
+      });
+    } catch (error) {
+      addNotification({
+        type: 'error',
+        title: 'Download Failed',
+        message: error instanceof Error ? error.message : 'Failed to create zip file'
+      });
+    }
+  }, [selectedNode, addNotification]);
+
   const handleSaveName = useCallback(() => {
     if (selectedNodeId && nameInput.trim()) {
       updateNodeName(selectedNodeId, nameInput.trim());
@@ -476,25 +552,47 @@ export default function EditorPanel() {
               )}
               {selectedNode.type === 'output-file' && (
                 <div className="file-actions">
-                  {selectedNode.files && selectedNode.files.length > 0 ? (
+                  {selectedNode.csvData || (selectedNode.files && selectedNode.files.length > 0) ? (
                     <>
-                      <button
-                        className="file-download-btn"
-                        onClick={handleFileDownload}
-                      >
-                        <Download size={14} />
-                        <span>Download</span>
-                      </button>
-                      <div className="uploaded-files-list">
-                        {selectedNode.files.map((file) => (
-                          <div key={file.id} className="file-item">
-                            <div className="file-item-info">
-                              <FileText size={14} />
-                              <span className="file-name">{file.name}</span>
-                            </div>
+                      {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
+                        <button
+                          className="file-download-btn"
+                          onClick={handleDownloadAllAsZip}
+                          style={{ background: 'var(--accent-primary)', color: 'white' }}
+                        >
+                          <Download size={14} />
+                          <span>Download All ({(window as any).__outputFiles[selectedNode.id].length} files)</span>
+                        </button>
+                      ) : selectedNode.csvData ? (
+                        <button
+                          className="file-download-btn"
+                          onClick={handleDownloadCSV}
+                        >
+                          <Download size={14} />
+                          <span>Download CSV</span>
+                        </button>
+                      ) : null}
+                      {selectedNode.files && selectedNode.files.length > 0 && (
+                        <>
+                          <button
+                            className="file-download-btn"
+                            onClick={handleFileDownload}
+                          >
+                            <Download size={14} />
+                            <span>Download from S3</span>
+                          </button>
+                          <div className="uploaded-files-list">
+                            {selectedNode.files.map((file) => (
+                              <div key={file.id} className="file-item">
+                                <div className="file-item-info">
+                                  <FileText size={14} />
+                                  <span className="file-name">{file.name}</span>
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
+                        </>
+                      )}
                     </>
                   ) : (
                     <span className="file-placeholder">No output file yet</span>
@@ -593,11 +691,52 @@ export default function EditorPanel() {
               />
             )}
             {selectedNode.type === 'output-file' && selectedNode.csvData && (
-              <CSVViewer
-                data={selectedNode.csvData}
-                fileName={selectedNode.fileName || 'Output'}
-                onDownload={handleDownloadCSV}
-              />
+              <>
+                {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
+                  <div className="multi-file-viewer">
+                    <div className="file-list-panel">
+                      <div className="file-list-header">
+                        <span>Output Files ({(window as any).__outputFiles[selectedNode.id].length})</span>
+                      </div>
+                      <div className="file-list">
+                        {(window as any).__outputFiles[selectedNode.id].map((file: any, index: number) => (
+                          <div
+                            key={index}
+                            className={`file-list-item ${selectedOutputFileIndex === index ? 'active' : ''}`}
+                            onClick={() => setSelectedOutputFileIndex(index)}
+                          >
+                            <FileText size={14} />
+                            <span className="file-list-name">{file.fileName}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="file-viewer-panel">
+                      <CSVViewer
+                        data={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].content}
+                        fileName={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].fileName}
+                        onDownload={() => {
+                          const file = (window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex];
+                          const link = document.createElement('a');
+                          const blob = new Blob([file.content], { type: 'text/csv' });
+                          link.href = URL.createObjectURL(blob);
+                          link.download = file.fileName;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          URL.revokeObjectURL(link.href);
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <CSVViewer
+                    data={selectedNode.csvData}
+                    fileName={selectedNode.fileName || 'Output'}
+                    onDownload={handleDownloadCSV}
+                  />
+                )}
+              </>
             )}
             {selectedNode.type !== 'compute' && !selectedNode.csvData && (
               <div className="empty-state">

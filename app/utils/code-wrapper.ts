@@ -102,23 +102,40 @@ if __name__ == "__main__":
   }
 
   script += `
-        # Write output to S3
-        print(f"Writing output to S3: s3://{BUCKET_NAME}/{OUTPUT_PATH}")
-
-        try:
-            csv_buffer = StringIO()
-            result.to_csv(csv_buffer, index=False)
-            s3_client.put_object(
-                Bucket=BUCKET_NAME,
-                Key=OUTPUT_PATH,
-                Body=csv_buffer.getvalue().encode('utf-8')
-            )
-            print("Output written to S3 successfully")
-        except Exception as e:
-            print(f"Error writing to S3: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            raise Exception(f"Could not write output to S3: {e}")
+        # Write output (to local file or S3 depending on BUCKET_NAME)
+        if os.path.isabs(BUCKET_NAME):
+            # Local execution - BUCKET_NAME is a filesystem path
+            print(f"Writing output locally to: {OUTPUT_PATH}")
+            try:
+                # Ensure output directory exists
+                output_dir = os.path.dirname(OUTPUT_PATH)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                
+                result.to_csv(OUTPUT_PATH, index=False)
+                print(f"Output written locally to {OUTPUT_PATH}")
+            except Exception as e:
+                print(f"Error writing output locally: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc()
+                raise Exception(f"Could not write output locally: {e}")
+        else:
+            # AWS execution - BUCKET_NAME is an S3 bucket
+            print(f"Writing output to S3: s3://{BUCKET_NAME}/{OUTPUT_PATH}")
+            try:
+                csv_buffer = StringIO()
+                result.to_csv(csv_buffer, index=False)
+                s3_client.put_object(
+                    Bucket=BUCKET_NAME,
+                    Key=OUTPUT_PATH,
+                    Body=csv_buffer.getvalue().encode('utf-8')
+                )
+                print("Output written to S3 successfully")
+            except Exception as e:
+                print(f"Error writing to S3: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc()
+                raise Exception(f"Could not write output to S3: {e}")
 
         print("Task completed successfully")
 
