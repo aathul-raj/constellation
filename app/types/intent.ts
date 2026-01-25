@@ -105,6 +105,10 @@ export interface GeneratePipelineIntent {
   pipelineDescription?: string;
   nodes?: PipelineNode[];
   edges?: PipelineEdge[];
+  // Optional: integrate with existing graph
+  editNodes?: EditNodeIntent[];
+  deleteNodeIds?: string[]; // Existing node IDs to delete
+  deleteNodeNames?: string[]; // Existing node names to delete
   parallelizationPlan?: ParallelizationPlan;
   estimatedPerformance?: string;
   message?: string;

@@ -150,10 +150,13 @@ YOUR TASKS:
 2. **For FULL PIPELINE requests** (generate_pipeline intent):
    - ALWAYS ask clarifying questions first (minimum one round)
    - Understand: desired outputs, transformations, scale, performance needs
-   - If input file exists, reference its metadata in questions
+  - If input file exists, reference its metadata in questions and DO NOT ask for size/input format already known
    - When ready: design an HPC-optimized dependency graph
    - Apply parallelization patterns: split-execute-reduce, parallel-columns, map-reduce
    - Generate all nodes with proper edges and code
+  - **If the user wants to integrate with existing nodes**, DO NOT create duplicate input/output nodes.
+    - Use existing node IDs from the CURRENT PIPELINE STATE in the edges.
+    - Example: If user says “use Input A”, set edges like {"from": "<existing-input-id>", "to": "compute_1"}.
 
 3. **For node creation requests**:
    - Extract the node type they want: input-file (uploading data), compute (processing), or output-file (results)
@@ -427,6 +430,14 @@ For GENERATE_PIPELINE intent (when user describes an ENTIRE pipeline in natural 
     { "from": "executor_2", "to": "reducer_1" },
     { "from": "reducer_1", "to": "output_1" }
   ],
+  "editNodes": [
+    {
+      "intent": "edit_node",
+      "nodeId": "<existing-node-id>",
+      "addOutConnections": ["<other-node-id>"]
+    }
+  ],
+  "deleteNodeIds": ["<existing-node-id>"],
   "parallelizationPlan": {
     "pattern": "split-execute-reduce",
     "splitStrategy": "row-chunks",
@@ -449,21 +460,35 @@ CRITICAL RULES FOR GENERATE_PIPELINE:
 - Optional (can assume defaults): performance targets, specific column names, edge cases
 - If input file is already uploaded, reference its metadata in your questions
 
-**2. WHEN TO GENERATE (you have enough info if you know)**:
-- ✓ Input format (CSV, Parquet, etc.)
+**2. WORKING WITH EXISTING NODES**:
+- Check the CURRENT PIPELINE STATE above to see if there are existing nodes
+- ALWAYS include ALL nodes in the "nodes" array, even existing input nodes
+- Use "input_1" as tempId for the first input node (even if reusing existing)
+- If user says "for the given input node", "from this input", "build off existing input":
+  - Still include an input-file node in "nodes" with tempId "input_1" (system will map to existing)
+  - Use "input_1" in your edges - the system will automatically resolve to the existing input node
+- Example structure (ALWAYS follow this):
+  - nodes: [{tempId: "input_1", name: "Input", type: "input-file"}, {tempId: "compute_1", ...}, {tempId: "output_1", ...}]
+  - edges: [{from: "input_1", to: "compute_1"}, {from: "compute_1", to: "output_1"}]
+- The system automatically maps "input_1" to existing input nodes when available
+
+**3. WHEN TO GENERATE (you have enough info if you know)**:
+- ✓ Input format (CSV, Parquet, etc.) OR existing input node
 - ✓ Approximate data size (helps determine if parallelization is worth it)
 - ✓ Main transformation/operation (filter, aggregate, join, etc.)
 - ✓ Output format
 - You CAN assume defaults for: column names, date formats, edge cases, performance targets
 - Example: "20MB CSV, filter by region, rolling averages, CSV output" = ENOUGH INFO → Generate!
 
-**3. DETECT PIPELINE REQUESTS** - Trigger words:
-- "build a pipeline for...", "I want to do X with a dataset"
-- "create a workflow that...", "design a data processing system"
+**4. DETECT PIPELINE REQUESTS** - Trigger words:
+- "build a pipeline", "create a complex pipeline", "create a full pipeline"
+- "build a workflow", "design a data processing system"
 - "process this CSV to...", "I need to analyze..."
-- Any request describing END-TO-END data processing
+- "multi-step", "multiple steps", "several transformations"
+- Any request describing END-TO-END data processing or MULTIPLE operations
+- IMPORTANT: If user says "complex pipeline" or describes >1 transformation → generate_pipeline NOT create_node
 
-**4. HPC OPTIMIZATION PATTERNS** - Apply when beneficial:
+**5. HPC OPTIMIZATION PATTERNS** - Apply when beneficial:
 
 Pattern A: **Split-Execute-Reduce** (for large files)
 - Input → Splitter → N parallel Executors → Reducer → Output
@@ -482,17 +507,23 @@ Pattern D: **Sequential** (when parallelism doesn't help)
 - Input → Compute → Output
 - Use when: operations have data dependencies or dataset is small
 
-**5. SCRIPT REUSE**:
+**6. SCRIPT REUSE**:
 - When multiple nodes do the SAME operation on different data partitions:
   - Generate the code ONCE
   - Assign same scriptGroupId to all those nodes
   - The system will reuse the script across those nodes
 
-**6. NODE NAMING CONVENTIONS**:
+**7. NODE NAMING CONVENTIONS**:
 - Splitter nodes: "Data Partitioner", "Chunk Splitter"
 - Executor nodes: "Process Chunk 1", "Process Chunk 2" (numbered)
 - Reducer nodes: "Merge Results", "Aggregate Outputs"
 - Use descriptive names that explain the operation
+
+**7. EXISTING GRAPH INTEGRATION**:
+- If the user asks to integrate with an existing graph or references a specific node, use that existing node's ID in edges.
+- You may include editNodes to modify existing nodes (add/remove connections or update code).
+- You may include deleteNodeIds to remove obsolete nodes.
+- Do NOT create duplicate input/output nodes when the user wants to reuse existing ones.
 
 For CHAT intent:
 {
@@ -515,42 +546,164 @@ IMPORTANT:
 
     // Deterministic pipeline flow:
     // 1) First pipeline request -> ALWAYS ask one round of clarification (no model call)
-    // 2) Second request (pendingIntent exists) -> ALWAYS generate pipeline
+    // 2) Second request (pending pipeline exists) -> ALWAYS generate pipeline
     const promptLower = prompt?.toLowerCase() || '';
-    const isLikelyPipelineRequest =
-      /(create|build|design|generate)\s+(a\s+)?(pipeline|workflow)/.test(promptLower) ||
+    
+    // Check if user is confirming a previous action suggestion
+    const isConfirmation = /^(do it|yes|go ahead|proceed|ok|okay|sure|yep|yeah|please|confirm|execute|run it|make it happen|let'?s go|go for it)\s*[.!]?$/i.test(promptLower.trim());
+    
+    // Check recent history for pending edit/action context
+    const recentHistory = Array.isArray(history) ? history.slice(-4) : [];
+    const lastAssistantMessage = recentHistory.filter((h: any) => h?.role === 'assistant').pop()?.content?.toLowerCase() || '';
+    const lastUserMessage = recentHistory.filter((h: any) => h?.role === 'user').slice(-2, -1)[0]?.content?.toLowerCase() || '';
+    
+    // Detect if the last assistant message was proposing an action (not asking a question)
+    const assistantProposedAction = 
+      /\b(i('ll| will)|let me|i can|i'?m going to)\b.*\b(add|create|modify|update|connect|build|generate|insert)\b/i.test(lastAssistantMessage) &&
+      !lastAssistantMessage.includes('?');
+    
+    // Extract the edit context from recent messages for confirmation handling
+    const editContextFromHistory = recentHistory
+      .filter((h: any) => h?.role === 'user')
+      .map((h: any) => h?.content || '')
+      .join(' ')
+      .toLowerCase();
+    
+    const hasRecentEditContext = 
+      /(add|insert|modify|update|extend|expand)\b/.test(editContextFromHistory) &&
+      /(node|nodes|reducer|compute|pipeline|graph|output)\b/.test(editContextFromHistory);
+    
+    let isLikelyPipelineRequest =
+      /(create|build|design|generate|make)\s+(a\s+)?(complex|simple|full|complete|entire|whole)?\s*?(pipeline|workflow)/.test(promptLower) ||
       /end-?to-?end/.test(promptLower) ||
       /process\s+this\s+(csv|parquet|json|xlsx)/.test(promptLower) ||
+      /(multi-step|multiple\s+steps?|several\s+steps?)/.test(promptLower) ||
       pendingIntent?.intent === 'generate_pipeline';
 
-    if (!pendingIntent && isLikelyPipelineRequest) {
-      const hasInputFormat = /\b(csv|parquet|json|xlsx)\b/.test(promptLower);
+    // Check if we have file metadata anywhere in the graph
+    const allInputNodes = graph?.nodes?.filter((n: any) => n.type === 'input-file') || [];
+    const graphHasFileMetadata = allInputNodes.some((n: any) =>
+      (n.fileMetadata && Object.keys(n.fileMetadata).length > 0) ||
+      (Array.isArray(n.files) && n.files.some((f: any) => f?.metadata)) ||
+      n.fileName || n.fileType
+    );
+    const graphHasComputeNodes = (graph?.nodes?.filter((n: any) => n.type === 'compute')?.length || 0) > 0;
+    const graphHasOutputNodes = (graph?.nodes?.filter((n: any) => n.type === 'output-file')?.length || 0) > 0;
+    const hasExistingPipeline = graphHasComputeNodes || (allInputNodes.length > 0 && graphHasOutputNodes);
+
+    // Detect edit requests - these should skip clarification and go straight to editing
+    const isPipelineEditRequest =
+      (graph?.nodes?.length || 0) > 0 &&
+      (
+        // Direct edit keywords with pipeline context
+        (/(add|insert|modify|update|extend|expand|append|rework|refactor|remove|delete|disconnect|connect)\b/.test(promptLower) &&
+         /(pipeline|workflow|graph|node|nodes|reducer|combine|merge|output|compute|input|connection)\b/.test(promptLower)) ||
+        // "let's modify/change/update this/the pipeline" (with anything after)
+        /let'?s\s+(modify|change|update|edit|adjust|tweak)/.test(promptLower) ||
+        // "modify/change this pipeline"
+        /(modify|change|update|edit)\s+(this|the)\s+(pipeline|graph|workflow)/.test(promptLower) ||
+        // "add X more Y nodes" pattern
+        /add\s+(\w+\s+)?more\s+\w*\s*(node|compute|process)/.test(promptLower) ||
+        // Confirmation of a previous edit proposal
+        (isConfirmation && assistantProposedAction && hasRecentEditContext)
+      );
+
+    // Log detection for debugging
+    console.log('[Edit Detection]', {
+      promptLower: promptLower.substring(0, 100),
+      isConfirmation,
+      assistantProposedAction,
+      hasRecentEditContext,
+      isPipelineEditRequest,
+      graphNodeCount: graph?.nodes?.length || 0,
+      graphHasFileMetadata,
+      hasExistingPipeline
+    });
+
+    if (isPipelineEditRequest) {
+      isLikelyPipelineRequest = true;
+    }
+
+    const buildPipelineClarification = () => {
+      const inputNodes = allInputNodes;
+      const outputNodes = graph?.nodes?.filter((n: any) => n.type === 'output-file') || [];
+      const promptText = prompt || '';
+      const referencedNode =
+        graph?.nodes?.find((n: any) => promptText.toLowerCase().includes(n.name.toLowerCase())) ||
+        (selectedNode?.type === 'input-file' ? selectedNode : null);
+
+      // Use the graph-level metadata check
+      const hasInputFileMetadata = graphHasFileMetadata;
+      
+      // Check if user has described specific transformations in their request
+      const hasSpecificTransformation = 
+        // Column operations
+        /(add|create|derive|compute|calculate|concat|sum|average|mean|count|max|min)\s+(a\s+)?(new\s+)?(column|field|value)/i.test(promptText) ||
+        // Specific operations described
+        /\b(concat|concatenat|sum|index|letter|alphabetic|join|split|filter|group|aggregate|merge|sort|transform)\b/i.test(promptText) ||
+        // "that does X" or "which does X" patterns
+        /\b(that|which)\s+(does|performs|computes|calculates|adds|creates)/i.test(promptText) ||
+        // Specific formulas or patterns described
+        /\b(ie|i\.e\.|e\.g\.|for example|such as)\b/i.test(promptText);
+      
+      // If we have file metadata, we know the format and can infer size
+      const hasInputFormat = hasInputFileMetadata || /\b(csv|parquet|json|xlsx)\b/.test(promptLower);
       const hasSize =
+        hasInputFileMetadata || // File metadata implies we know the size
+        hasExistingPipeline || // Existing pipeline means user already provided this info
         /\b\d+(\.\d+)?\s*(mb|gb|kb|tb)\b/.test(promptLower) ||
         /(several|many|few|hundreds?|thousands?)\s+(hundred|thousand|million)?\s*(mb|gb|kb|tb)/.test(promptLower) ||
         /(large|huge|massive|big|small)\s+(file|dataset|csv|data)/.test(promptLower);
+      
+      // If there's an existing output node, we know the output format
       const hasOutputFormat =
+        outputNodes.length > 0 || // Existing output node implies we know the format
+        hasInputFileMetadata || // Often output matches input format
         /\boutput\b[^\n]{0,60}\b(csv|parquet|json|xlsx|table|database)\b/.test(promptLower) ||
         /\b(csv|parquet|json|xlsx)\s+output\b/.test(promptLower);
 
       const clarifyingQuestions: string[] = [];
-      if (!hasSize) {
+      
+      // Only ask about size if we don't have file metadata AND no existing pipeline
+      if (!hasSize && !hasInputFileMetadata && !hasExistingPipeline) {
         clarifyingQuestions.push('What is the approximate size of the dataset (e.g., MB/GB)?');
       }
-      if (!hasInputFormat) {
+      // Only ask about input format if we don't have file metadata
+      if (!hasInputFormat && !hasInputFileMetadata) {
         clarifyingQuestions.push('What is the input format (e.g., CSV, Parquet)?');
       }
-      if (!hasOutputFormat) {
+      // Only ask about output format if no existing output and not inferrable
+      if (!hasOutputFormat && outputNodes.length === 0 && !hasInputFileMetadata) {
         clarifyingQuestions.push('What output format do you need (e.g., CSV, database table)?');
       }
 
+      // If we have all file info AND user described specific transformations, skip clarification entirely
+      if ((hasInputFileMetadata || hasExistingPipeline) && hasSpecificTransformation) {
+        // We have enough info - don't ask any questions, just generate
+        console.log('[Clarification] Skipping - have file metadata and specific transformation');
+        return null; // Signal to proceed with generation
+      }
+
+      // If we already have all the info from file metadata but no transformation specified
+      if ((hasInputFileMetadata || hasExistingPipeline) && clarifyingQuestions.length === 0 && !hasSpecificTransformation) {
+        // Only ask about transformation if user hasn't described one
+        clarifyingQuestions.push('What specific transformations would you like to perform?');
+      }
+
+      if (!referencedNode && graph?.nodes?.length) {
+        if (inputNodes.length > 1) {
+          clarifyingQuestions.push('Which existing input node should this pipeline start from?');
+        } else if (inputNodes.length === 1 && outputNodes.length > 0 && !hasSpecificTransformation) {
+          clarifyingQuestions.push('Should I connect the new pipeline to your existing output node, or create a new output?');
+        } else if (inputNodes.length === 0 && graph?.nodes?.length > 0) {
+          clarifyingQuestions.push('Which existing node should this pipeline attach to?');
+        }
+      }
+
+      // If we still have no questions, we have enough info - don't ask unnecessary questions
       if (clarifyingQuestions.length === 0) {
-        const hasTransform = /\b(add|derive|filter|aggregate|group|join|merge|clean|normalize|encode|feature|analy|classify)\b/.test(promptLower);
-        clarifyingQuestions.push(
-          hasTransform
-            ? 'Any performance preferences or constraints (e.g., parallelism level, chunk size)?'
-            : 'What are the main transformations or analysis you want to perform?'
-        );
+        console.log('[Clarification] Skipping - no questions needed');
+        return null; // Signal to proceed with generation
       }
 
       return NextResponse.json({
@@ -560,11 +713,70 @@ IMPORTANT:
         clarifyingQuestions,
         message: 'I can build the pipeline. I need a few details first.'
       });
+    };
+
+    // For pipeline edit requests, skip clarification entirely
+    if (isPipelineEditRequest) {
+      console.log('[Pipeline Edit] Detected edit request, skipping clarification');
+      // Continue to edit prompt below
+    } else if (isLikelyPipelineRequest && (!pendingIntent || pendingIntent.intent !== 'generate_pipeline')) {
+      const clarificationResponse = buildPipelineClarification();
+      if (clarificationResponse) {
+        return clarificationResponse;
+      }
+      // If buildPipelineClarification returns null, we have enough info - continue to generation
+      console.log('[Pipeline] Have enough info, proceeding to generation');
     }
 
-    console.log("Sending to Gemini...", isLikelyPipelineRequest ? "(using pipeline model)" : "(using lite model)");
+    // For pipeline edit requests (including confirmations), use a specialized prompt
+    let editPrompt = fullPrompt;
+    if (isPipelineEditRequest) {
+      // Build context about the edit request from history
+      const editContext = isConfirmation && hasRecentEditContext
+        ? `The user previously requested: "${editContextFromHistory}"\nThe user is now confirming with: "${prompt}"`
+        : `The user wants to modify the existing pipeline: "${prompt}"`;
+      
+      editPrompt = `${systemPrompt}
+
+CRITICAL: This is a PIPELINE EDIT request. You MUST respond with intent: "generate_pipeline" and completeness: "ready_to_generate".
+
+CURRENT GRAPH STATE (modify this):
+${JSON.stringify(graph, null, 2)}
+
+${editContext}
+
+INSTRUCTIONS:
+1. Analyze the current graph structure
+2. Determine what nodes/edges need to be added, modified, or deleted
+3. Return a generate_pipeline response with:
+   - New nodes to add (with proper tempIds and connections)
+   - Edges connecting new nodes to existing ones (use existing node IDs from the graph above)
+   - editNodes array if modifying existing node connections
+   - deleteNodeIds if removing nodes
+
+IMPORTANT:
+- For existing nodes, use their ACTUAL IDs from the graph above (like "${graph?.nodes?.[0]?.id || 'node-xxx'}")
+- For new nodes, use tempIds like "new_compute_1", "new_reducer_1"
+- Connect new nodes to existing ones using edges array
+- The user wants to see the changes applied immediately
+
+Response format:
+{
+  "intent": "generate_pipeline",
+  "completeness": "ready_to_generate",
+  "pipelineName": "Updated Pipeline",
+  "nodes": [...new nodes only...],
+  "edges": [...edges connecting new nodes to existing graph...],
+  "editNodes": [...modifications to existing nodes...],
+  "message": "I've updated your pipeline..."
+}
+
+User request: ${prompt}`;
+    }
+
+    console.log("Sending to Gemini...", isLikelyPipelineRequest ? "(using pipeline model)" : "(using lite model)", isPipelineEditRequest ? "[EDIT MODE]" : "");
     const activeModel = isLikelyPipelineRequest ? pipelineModel : model;
-    const result = await activeModel.generateContent(fullPrompt);
+    const result = await activeModel.generateContent(isPipelineEditRequest ? editPrompt : fullPrompt);
     const text = result.response.text();
     console.log("Raw response:", text);
 
@@ -585,7 +797,94 @@ IMPORTANT:
       console.log("Failed to parse JSON, using raw text as message");
     }
 
+    if (isPipelineEditRequest && parsed?.intent === 'create_node') {
+      const editRetryPrompt = `${systemPrompt}\n\nSTRICT OUTPUT REQUIREMENT:\n- You MUST respond with intent: \"generate_pipeline\" (NOT \"create_node\")\n- You are MODIFYING an existing pipeline/graph, not creating a single node\n- Include \"editNodes\" and/or new nodes + edges that attach to existing node IDs\n- Respond with valid JSON only\n\nUser request: ${prompt}`;
+
+      const editRetryResult = await pipelineModel.generateContent(editRetryPrompt);
+      const editRetryText = editRetryResult.response.text();
+
+      try {
+        const jsonMatch = editRetryText.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, editRetryText];
+        const jsonStr = jsonMatch[1]?.trim() || editRetryText.trim();
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        parsed = {
+          intent: "chat",
+          message: editRetryText
+        };
+      }
+    }
+
+    // If AI returned chat response for an edit request, force a retry with explicit instructions
+    if (isPipelineEditRequest && (parsed?.intent === 'chat' || parsed?.intent === 'generate_pipeline' && parsed?.completeness === 'needs_clarification')) {
+      console.log("AI returned chat/clarification for edit request - forcing pipeline generation");
+      
+      // Build the full edit context
+      const fullEditContext = [
+        ...(Array.isArray(history) ? history.map((h: any) => `${h.role}: ${h.content}`) : []),
+        `user: ${prompt}`
+      ].join('\n');
+      
+      const forceEditPrompt = `You are modifying an HPC pipeline graph. DO NOT ask questions. Generate the changes NOW.
+
+CURRENT GRAPH:
+${JSON.stringify(graph, null, 2)}
+
+CONVERSATION CONTEXT (what the user wants):
+${fullEditContext}
+
+TASK: Based on the conversation, determine what changes to make and output them as a generate_pipeline response.
+
+Common patterns:
+- "add X nodes that do Y" → create X new compute nodes with the specified code
+- "add a reducer" → create a new compute node that combines inputs from multiple sources
+- "connect X to Y" → use edges to link nodes
+
+YOU MUST respond with this EXACT JSON structure:
+{
+  "intent": "generate_pipeline",
+  "completeness": "ready_to_generate",
+  "pipelineName": "Updated Pipeline",
+  "pipelineDescription": "Description of changes made",
+  "nodes": [
+    // NEW nodes only - use tempIds like "new_compute_1"
+    {"tempId": "new_compute_1", "name": "Node Name", "type": "compute", "pythonCode": "def task(parent_param):\\n    ..."}
+  ],
+  "edges": [
+    // Connect new nodes to existing graph using ACTUAL node IDs from graph above
+    {"from": "${graph?.nodes?.find((n: any) => n.type === 'input-file')?.id || 'existing-id'}", "to": "new_compute_1"}
+  ],
+  "editNodes": [
+    // Optional: modify existing node connections
+    {"nodeId": "existing-id", "removeOutConnections": ["old-target"], "addOutConnections": ["new_compute_1"]}
+  ],
+  "message": "I've made the following changes..."
+}
+
+RESPOND WITH JSON ONLY. NO QUESTIONS.`;
+
+      const forceEditResult = await pipelineModel.generateContent(forceEditPrompt);
+      const forceEditText = forceEditResult.response.text();
+
+      try {
+        const jsonMatch = forceEditText.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, forceEditText];
+        const jsonStr = jsonMatch[1]?.trim() || forceEditText.trim();
+        parsed = JSON.parse(jsonStr);
+        console.log("Force edit parsed:", JSON.stringify(parsed, null, 2));
+      } catch {
+        console.error("Force edit failed to parse JSON:", forceEditText);
+        parsed = {
+          intent: "chat",
+          message: "I understood you want to modify the pipeline, but I had trouble generating the changes. Could you describe the modification more specifically?"
+        };
+      }
+    }
+
     const hasPendingPipeline = pendingIntent?.intent === 'generate_pipeline';
+
+    if (isLikelyPipelineRequest && !isPipelineEditRequest && !hasPendingPipeline && parsed?.intent !== 'generate_pipeline') {
+      return buildPipelineClarification();
+    }
 
     const shouldRetryGeneratePipeline =
       parsed?.intent === 'chat' &&
@@ -598,9 +897,11 @@ IMPORTANT:
       const combined = [prompt || '', historyText, pendingIntent?.understoodSoFar || '']
         .join('\n')
         .toLowerCase();
-      return /(create|build|design|generate)\s+(a\s+)?(pipeline|workflow)/.test(combined) ||
+      // Match "create a pipeline", "build complex pipeline", "create a full workflow", etc.
+      return /(create|build|design|generate|make)\s+(a\s+)?(complex|simple|full|complete|entire|whole)?\s*?(pipeline|workflow)/.test(combined) ||
         /end-?to-?end/.test(combined) ||
-        /process\s+this\s+(csv|parquet|json|xlsx)/.test(combined);
+        /process\s+this\s+(csv|parquet|json|xlsx)/.test(combined) ||
+        /(multi-step|multiple\s+steps?|several\s+steps?)/.test(combined);
     })();
 
     const hasAnsweredPipelineBasics = (() => {

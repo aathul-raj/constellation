@@ -14,6 +14,7 @@ export default function AIChatPanel() {
     addChatMessage,
     graph,
     selectedNodeId,
+    setGraph,
     updateNodeCode,
     updateNodeName,
     updateNodeParallelization,
@@ -410,63 +411,328 @@ export default function AIChatPanel() {
               });
             });
           } else if ((pipelineData.completeness === 'ready_to_generate' || pipelineData.completeness === 'complete') && pipelineData.nodes && pipelineData.edges) {
+            // Debug: Log what the AI returned
+            console.log('[Pipeline Generation] Received from AI:', {
+              nodes: pipelineData.nodes.map(n => ({ tempId: n.tempId, name: n.name, type: n.type })),
+              edges: pipelineData.edges
+            });
+
             // Clear pending state
             setPendingPipelineGeneration(null);
             setPendingNodeCreation(null);
 
+            // Build everything in a single atomic operation to avoid stale state
+            let workingNodes: typeof graph.nodes = [...graph.nodes];
+
+            // Step 1: Apply deletions first
+            if (pipelineData.deleteNodeIds?.length || pipelineData.deleteNodeNames?.length) {
+              const deleteIds = new Set<string>(pipelineData.deleteNodeIds || []);
+              (pipelineData.deleteNodeNames || []).forEach((name) => {
+                const match = workingNodes.find(n => n.name.toLowerCase() === name.toLowerCase());
+                if (match) deleteIds.add(match.id);
+              });
+
+              if (deleteIds.size > 0) {
+                workingNodes = workingNodes
+                  .filter(n => !deleteIds.has(n.id))
+                  .map(n => ({
+                    ...n,
+                    in: n.in.filter(id => !deleteIds.has(id)),
+                    out: n.out.filter(id => !deleteIds.has(id))
+                  }));
+              }
+            }
+
             // Create a mapping from tempId to actual nodeId
             const tempIdToActualId = new Map<string, string>();
+            const nodeIdMap = new Map<string, string>();
 
-            // First pass: Create all nodes
-            for (const nodeSpec of pipelineData.nodes) {
-              // Fix code if it's a compute node with code
-              let fixedCode = nodeSpec.pythonCode;
+            const selectedInputNode = selectedNodeId
+              ? workingNodes.find(n => n.id === selectedNodeId && n.type === 'input-file')
+              : undefined;
+            const singleInputNode = workingNodes.filter(n => n.type === 'input-file');
+            const defaultInputNode = !selectedInputNode && singleInputNode.length === 1
+              ? singleInputNode[0]
+              : undefined;
 
-              // Create the node without parent connection first (we'll connect via edges)
-              const actualId = createNode(
-                nodeSpec.type,
-                nodeSpec.name,
-                undefined, // No parent yet - edges will define connections
-                fixedCode
+            // Pre-map common input tempIds to existing input nodes
+            const fallbackInputNode = selectedInputNode || defaultInputNode;
+            if (fallbackInputNode) {
+              ['input_1', 'input', 'existing_input', 'data_input'].forEach(tempId => {
+                tempIdToActualId.set(tempId, fallbackInputNode.id);
+                nodeIdMap.set(tempId, fallbackInputNode.id);
+              });
+            }
+
+            // Pre-map all existing nodes by their ID and name for easy lookup
+            workingNodes.forEach(n => {
+              nodeIdMap.set(n.id, n.id);
+              nodeIdMap.set(n.name.toLowerCase(), n.id);
+            });
+
+            // Helper to resolve any reference (tempId, actual ID, or name) to actual ID
+            const resolveNodeRef = (ref?: string): string | undefined => {
+              if (!ref) return undefined;
+              // Check our maps first
+              if (nodeIdMap.has(ref)) return nodeIdMap.get(ref);
+              if (tempIdToActualId.has(ref)) return tempIdToActualId.get(ref);
+              // Direct ID match
+              const directMatch = workingNodes.find(n => n.id === ref);
+              if (directMatch) return directMatch.id;
+              // Case-insensitive name match
+              const nameMatch = workingNodes.find(n => n.name.toLowerCase() === ref.toLowerCase());
+              if (nameMatch) return nameMatch.id;
+              // Partial name match
+              const partialMatch = workingNodes.find(n => 
+                n.name.toLowerCase().includes(ref.toLowerCase()) ||
+                ref.toLowerCase().includes(n.name.toLowerCase())
               );
+              if (partialMatch) return partialMatch.id;
+              return undefined;
+            };
 
+            // Step 2: Create all new nodes
+            for (const nodeSpec of pipelineData.nodes) {
+              if (nodeSpec.type === 'input-file') {
+                const existingInput = resolveNodeRef(nodeSpec.name) || selectedInputNode?.id || defaultInputNode?.id;
+                if (existingInput) {
+                  tempIdToActualId.set(nodeSpec.tempId, existingInput);
+                  nodeIdMap.set(nodeSpec.tempId, existingInput);
+                  continue;
+                }
+              }
+
+              // Check if this node already exists (by name)
+              const existingByName = workingNodes.find(n => n.name.toLowerCase() === nodeSpec.name.toLowerCase());
+              if (existingByName) {
+                tempIdToActualId.set(nodeSpec.tempId, existingByName.id);
+                nodeIdMap.set(nodeSpec.tempId, existingByName.id);
+                continue;
+              }
+
+              // Generate a new node ID
+              const actualId = `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
               tempIdToActualId.set(nodeSpec.tempId, actualId);
+              nodeIdMap.set(nodeSpec.tempId, actualId);
 
-              // Update parallelization if specified
-              if (nodeSpec.parallelization) {
-                updateNodeParallelization(actualId, nodeSpec.parallelization);
+              // Create the node object
+              workingNodes.push({
+                id: actualId,
+                name: nodeSpec.name,
+                type: nodeSpec.type,
+                status: 'queued',
+                code: nodeSpec.pythonCode || (nodeSpec.type === 'compute'
+                  ? `def task(in_df):\n    import numpy as np\n    import pandas as pd\n\n    # Your code here\n    \n    return in_df`
+                  : ''
+                ),
+                in: [],
+                out: [],
+                parallelization: nodeSpec.parallelization
+              });
+            }
+
+            // Step 3: Apply editNodes (now that new nodes exist and are mapped)
+            if (pipelineData.editNodes?.length) {
+              for (const edit of pipelineData.editNodes) {
+                const targetId = edit.nodeId 
+                  ? resolveNodeRef(edit.nodeId)
+                  : resolveNodeRef(edit.nodeName);
+                if (!targetId) {
+                  console.warn('[Pipeline Edit] Could not find target node:', edit.nodeId || edit.nodeName);
+                  continue;
+                }
+
+                const targetNode = workingNodes.find(n => n.id === targetId);
+                if (!targetNode) continue;
+
+                // Handle connection replacements
+                if (edit.newInConnections !== undefined) {
+                  const newIn = edit.newInConnections
+                    .map(ref => resolveNodeRef(ref))
+                    .filter((id): id is string => id !== undefined);
+                  // Update source nodes' out arrays
+                  workingNodes.forEach(n => {
+                    if (n.out.includes(targetId) && !newIn.includes(n.id)) {
+                      n.out = n.out.filter(id => id !== targetId);
+                    }
+                  });
+                  newIn.forEach(sourceId => {
+                    const sourceNode = workingNodes.find(n => n.id === sourceId);
+                    if (sourceNode && !sourceNode.out.includes(targetId)) {
+                      sourceNode.out = [...sourceNode.out, targetId];
+                    }
+                  });
+                  targetNode.in = newIn;
+                }
+
+                if (edit.newOutConnections !== undefined) {
+                  const newOut = edit.newOutConnections
+                    .map(ref => resolveNodeRef(ref))
+                    .filter((id): id is string => id !== undefined);
+                  // Update target nodes' in arrays
+                  workingNodes.forEach(n => {
+                    if (n.in.includes(targetId) && !newOut.includes(n.id)) {
+                      n.in = n.in.filter(id => id !== targetId);
+                    }
+                  });
+                  newOut.forEach(destId => {
+                    const destNode = workingNodes.find(n => n.id === destId);
+                    if (destNode && !destNode.in.includes(targetId)) {
+                      destNode.in = [...destNode.in, targetId];
+                    }
+                  });
+                  targetNode.out = newOut;
+                }
+
+                // Handle connection additions
+                if (edit.addInConnections?.length) {
+                  for (const ref of edit.addInConnections) {
+                    const sourceId = resolveNodeRef(ref);
+                    if (sourceId && !targetNode.in.includes(sourceId)) {
+                      targetNode.in = [...targetNode.in, sourceId];
+                      const sourceNode = workingNodes.find(n => n.id === sourceId);
+                      if (sourceNode && !sourceNode.out.includes(targetId)) {
+                        sourceNode.out = [...sourceNode.out, targetId];
+                      }
+                    }
+                  }
+                }
+
+                if (edit.addOutConnections?.length) {
+                  for (const ref of edit.addOutConnections) {
+                    const destId = resolveNodeRef(ref);
+                    if (destId && !targetNode.out.includes(destId)) {
+                      targetNode.out = [...targetNode.out, destId];
+                      const destNode = workingNodes.find(n => n.id === destId);
+                      if (destNode && !destNode.in.includes(targetId)) {
+                        destNode.in = [...destNode.in, targetId];
+                      }
+                    }
+                  }
+                }
+
+                // Handle connection removals
+                if (edit.removeInConnections?.length) {
+                  for (const ref of edit.removeInConnections) {
+                    const sourceId = resolveNodeRef(ref);
+                    if (sourceId) {
+                      targetNode.in = targetNode.in.filter(id => id !== sourceId);
+                      const sourceNode = workingNodes.find(n => n.id === sourceId);
+                      if (sourceNode) {
+                        sourceNode.out = sourceNode.out.filter(id => id !== targetId);
+                      }
+                    }
+                  }
+                }
+
+                if (edit.removeOutConnections?.length) {
+                  for (const ref of edit.removeOutConnections) {
+                    const destId = resolveNodeRef(ref);
+                    if (destId) {
+                      targetNode.out = targetNode.out.filter(id => id !== destId);
+                      const destNode = workingNodes.find(n => n.id === destId);
+                      if (destNode) {
+                        destNode.in = destNode.in.filter(id => id !== targetId);
+                      }
+                    }
+                  }
+                }
+
+                // Handle code update
+                if (edit.newCode && targetNode.type === 'compute') {
+                  const parentNode = targetNode.in.length > 0
+                    ? workingNodes.find(n => n.id === targetNode.in[0])
+                    : null;
+                  const inputParamName = parentNode
+                    ? nodeNameToParamName(parentNode.name)
+                    : 'input';
+                  targetNode.code = fixGeneratedCode(edit.newCode, inputParamName);
+                }
+
+                if (edit.parallelization) {
+                  targetNode.parallelization = edit.parallelization;
+                }
               }
             }
 
-            // Second pass: Create all edges
+            // Step 4: Create all edges
+            console.log('[Pipeline Generation] Creating edges:', {
+              edges: pipelineData.edges,
+              nodeIdMap: Object.fromEntries(nodeIdMap),
+              tempIdToActualId: Object.fromEntries(tempIdToActualId)
+            });
+
             for (const edge of pipelineData.edges) {
-              const sourceId = tempIdToActualId.get(edge.from);
-              const targetId = tempIdToActualId.get(edge.to);
+              const sourceId = resolveNodeRef(edge.from);
+              const targetId = resolveNodeRef(edge.to);
+
+              console.log(`[Pipeline Generation] Edge ${edge.from} -> ${edge.to}:`, {
+                sourceId,
+                targetId
+              });
 
               if (sourceId && targetId) {
-                connectNodes(sourceId, targetId);
+                const sourceNode = workingNodes.find(n => n.id === sourceId);
+                const targetNode = workingNodes.find(n => n.id === targetId);
+
+                if (sourceNode && !sourceNode.out.includes(targetId)) {
+                  sourceNode.out = [...sourceNode.out, targetId];
+                }
+                if (targetNode && !targetNode.in.includes(sourceId)) {
+                  targetNode.in = [...targetNode.in, sourceId];
+                }
+              } else {
+                console.error(`[Pipeline Generation] FAILED to resolve edge: ${edge.from} -> ${edge.to}`, {
+                  sourceId,
+                  targetId,
+                  availableNodes: workingNodes.map(n => ({ id: n.id, name: n.name }))
+                });
               }
             }
 
-            // Third pass: Fix code references now that we know the actual connections
+            // Step 5: Fix code references
             for (const nodeSpec of pipelineData.nodes) {
               if (nodeSpec.type === 'compute' && nodeSpec.pythonCode) {
-                const actualId = tempIdToActualId.get(nodeSpec.tempId);
-                if (actualId) {
+                const actualId = nodeIdMap.get(nodeSpec.tempId);
+                const nodeToUpdate = actualId ? workingNodes.find(n => n.id === actualId) : undefined;
+
+                if (nodeToUpdate) {
                   const incomingEdges = pipelineData.edges.filter(e => e.to === nodeSpec.tempId);
                   if (incomingEdges.length > 0) {
-                    const parentTempId = incomingEdges[0].from;
-                    const parentSpec = pipelineData.nodes.find(n => n.tempId === parentTempId);
+                    const parentRef = incomingEdges[0].from;
+                    const parentSpec = pipelineData.nodes.find(n => n.tempId === parentRef);
 
+                    let inputParamName = 'input';
                     if (parentSpec) {
-                      const inputParamName = nodeNameToParamName(parentSpec.name);
-                      const fixedCode = fixGeneratedCode(nodeSpec.pythonCode, inputParamName);
-                      updateNodeCode(actualId, fixedCode);
+                      inputParamName = nodeNameToParamName(parentSpec.name);
+                    } else {
+                      const existingParentId = resolveNodeRef(parentRef);
+                      const existingParent = existingParentId
+                        ? workingNodes.find(n => n.id === existingParentId)
+                        : undefined;
+
+                      if (existingParent) {
+                        inputParamName = nodeNameToParamName(existingParent.name);
+                      }
                     }
+
+                    nodeToUpdate.code = fixGeneratedCode(nodeSpec.pythonCode, inputParamName);
                   }
                 }
               }
             }
+
+            // Step 6: Apply the complete graph update atomically
+            console.log('[Pipeline Generation] Final graph state:', {
+              totalNodes: workingNodes.length,
+              nodesWithConnections: workingNodes.filter(n => n.in.length > 0 || n.out.length > 0).length,
+              nodeDetails: workingNodes.map(n => ({ id: n.id, name: n.name, in: n.in, out: n.out }))
+            });
+
+            setGraph({
+              ...graph,
+              nodes: workingNodes
+            });
 
             // Build success message
             let successMsg = pipelineData.message || `**Pipeline Created: ${pipelineData.pipelineName}**\n\n`;
@@ -494,10 +760,12 @@ export default function AIChatPanel() {
               });
             });
 
-            // Select the first input node for visibility
+            // Select the first compute node for visibility (more useful than input)
+            const firstComputeNode = pipelineData.nodes.find(n => n.type === 'compute');
             const firstInputNode = pipelineData.nodes.find(n => n.type === 'input-file');
-            if (firstInputNode) {
-              const actualId = tempIdToActualId.get(firstInputNode.tempId);
+            const nodeToSelect = firstComputeNode || firstInputNode;
+            if (nodeToSelect) {
+              const actualId = tempIdToActualId.get(nodeToSelect.tempId);
               if (actualId) {
                 selectNode(actualId);
               }
@@ -544,6 +812,7 @@ export default function AIChatPanel() {
     pendingNodeCreation,
     pendingPipelineGeneration,
     addChatMessage,
+    setGraph,
     updateNodeCode,
     updateNodeName,
     updateNodeParallelization,
