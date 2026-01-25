@@ -208,7 +208,7 @@ export default function EditorPanel() {
   }, [consoleLogs]);
 
   // Function to run deployment with Autopilot - AI automatically fixes errors
-  const runWithAutopilot = useCallback(async (endpoint: string, title: string, isRetry: boolean = false) => {
+  const runWithAutopilot = useCallback(async (endpoint: string, title: string, isRetry: boolean = false, deployType?: 'local' | 'cloud') => {
     if (isRunning && !isRetry) return;
     
     // Check if stop was requested
@@ -260,6 +260,9 @@ export default function EditorPanel() {
       setAutopilotRetryCount(0);
       autopilotRetryCountRef.current = 0;
       stopAutopilotRef.current = false;
+      if (deployType) {
+        setCurrentDeploymentType(deployType);
+      }
     }
 
     setIsRunning(true);
@@ -408,6 +411,7 @@ export default function EditorPanel() {
                     autopilotRetryCountRef.current = 0;
                     setCurrentFixingNode(null);
                     setIsRunning(false);
+                    setCurrentDeploymentType(null);
                     break;
                 }
               } catch (e) {
@@ -433,6 +437,7 @@ export default function EditorPanel() {
             content: 'Autopilot stopped.'
           });
           setIsRunning(false);
+          setCurrentDeploymentType(null);
           return;
         }
 
@@ -448,6 +453,7 @@ export default function EditorPanel() {
             message: `Could not fix after ${autopilotMaxRetries} attempts`
           });
           setIsRunning(false);
+          setCurrentDeploymentType(null);
           setIsAutopilotActive(false);
           setAutopilotRetryCount(0);
           autopilotRetryCountRef.current = 0;
@@ -486,6 +492,7 @@ export default function EditorPanel() {
             content: 'Autopilot stopped.'
           });
           setIsRunning(false);
+          setCurrentDeploymentType(null);
           return;
         }
 
@@ -536,6 +543,7 @@ export default function EditorPanel() {
           autopilotRetryCountRef.current = 0;
           setCurrentFixingNode(null);
           setIsRunning(false);
+          setCurrentDeploymentType(null);
         }
         return;
       }
@@ -564,6 +572,7 @@ export default function EditorPanel() {
         });
       }
       setIsRunning(false);
+      setCurrentDeploymentType(null);
     }
   }, [
     isRunning, autopilotMaxRetries,
@@ -769,11 +778,11 @@ export default function EditorPanel() {
   }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
 
   const handleRun = useCallback(async () => {
-    await runWithAutopilot('/api/deploy-batch', 'Pipeline Executed (AWS)');
+    await runWithAutopilot('/api/deploy-batch', 'Pipeline Executed (AWS)', false, 'cloud');
   }, [runWithAutopilot]);
 
   const handleRunLocal = useCallback(async () => {
-    await runWithAutopilot('/api/deploy-local', 'Local Test Complete');
+    await runWithAutopilot('/api/deploy-local', 'Local Test Complete', false, 'local');
   }, [runWithAutopilot]);
 
   const handleReset = useCallback(() => {
@@ -1717,22 +1726,22 @@ export default function EditorPanel() {
             Reset
           </button>
           <button
-            className={`btn btn-secondary ${isRunning ? 'running' : ''}`}
+            className={`btn btn-secondary ${isRunning && currentDeploymentType === 'local' ? 'running' : ''}`}
             onClick={handleRunLocal}
             disabled={isRunning}
             title="Test your scripts locally before deploying to cloud"
           >
             <Play size={16} />
-            {isRunning && !isAutopilotActive ? 'Testing...' : 'Test Pipeline'}
+            {isRunning && currentDeploymentType === 'local' && !isAutopilotActive ? 'Testing...' : 'Test Pipeline'}
           </button>
           <button
-            className={`btn btn-primary ${isRunning ? 'running' : ''}`}
+            className={`btn btn-primary ${isRunning && currentDeploymentType === 'cloud' ? 'running' : ''}`}
             onClick={handleRun}
             disabled={isRunning}
             title="Deploy and run on distributed cloud compute clusters"
           >
             <Play size={16} />
-            {isRunning && !isAutopilotActive ? 'Deploying...' : 'Deploy to Cloud'}
+            {isRunning && currentDeploymentType === 'cloud' && !isAutopilotActive ? 'Deploying...' : 'Deploy to Cloud'}
           </button>
         </div>
       </div>
