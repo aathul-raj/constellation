@@ -58,6 +58,7 @@ export default function EditorPanel() {
   const [inputFileContent, setInputFileContent] = useState<string | null>(null);
   const [loadingInputFile, setLoadingInputFile] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [currentDeploymentType, setCurrentDeploymentType] = useState<'local' | 'cloud' | null>(null);
   const consoleRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -147,7 +148,7 @@ export default function EditorPanel() {
     return errors;
   }, [graph]);
 
-  const runStreamingDeployment = useCallback(async (endpoint: string, title: string) => {
+  const runStreamingDeployment = useCallback(async (endpoint: string, title: string, deploymentType: 'local' | 'cloud') => {
     if (isRunning) return;
 
     // Run pre-deployment lint check
@@ -174,6 +175,7 @@ export default function EditorPanel() {
     }
 
     setIsRunning(true);
+    setCurrentDeploymentType(deploymentType);
     setRunProgress(0);
     resetAllStatuses();
     clearConsoleLogs();
@@ -322,15 +324,16 @@ export default function EditorPanel() {
       });
     } finally {
       setIsRunning(false);
+      setCurrentDeploymentType(null);
     }
   }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification, updateNodeCsvData, clearNodeCsvData, removeNodeFile, addConsoleLog, clearConsoleLogs, lintComputeNodes]);
 
   const handleRun = useCallback(async () => {
-    await runStreamingDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
+    await runStreamingDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)', 'cloud');
   }, [runStreamingDeployment]);
 
   const handleRunLocal = useCallback(async () => {
-    await runStreamingDeployment('/api/deploy-local', 'Local Test Complete');
+    await runStreamingDeployment('/api/deploy-local', 'Local Test Complete', 'local');
   }, [runStreamingDeployment]);
 
   const handleReset = useCallback(() => {
@@ -1057,22 +1060,22 @@ export default function EditorPanel() {
             Reset
           </button>
           <button
-            className={`btn btn-secondary ${isRunning ? 'running' : ''}`}
+            className={`btn btn-secondary ${currentDeploymentType === 'local' ? 'running' : ''}`}
             onClick={handleRunLocal}
             disabled={isRunning}
             title="Test your scripts locally before deploying to cloud"
           >
             <Play size={16} />
-            {isRunning ? 'Testing...' : 'Test Pipeline'}
+            {currentDeploymentType === 'local' ? 'Testing...' : 'Test Pipeline'}
           </button>
           <button
-            className={`btn btn-primary ${isRunning ? 'running' : ''}`}
+            className={`btn btn-primary ${currentDeploymentType === 'cloud' ? 'running' : ''}`}
             onClick={handleRun}
             disabled={isRunning}
             title="Deploy and run on distributed cloud compute clusters"
           >
             <Play size={16} />
-            {isRunning ? 'Deploying...' : 'Deploy to Cloud'}
+            {currentDeploymentType === 'cloud' ? 'Deploying...' : 'Deploy to Cloud'}
           </button>
         </div>
       </div>
