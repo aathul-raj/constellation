@@ -536,7 +536,24 @@ export default function AIChatPanel() {
     } finally {
       setIsTyping(false);
     }
-  }, [graph, selectedNodeId, addChatMessage, updateNodeCode, updateNodeName, updateNodeParallelization, selectNode, createNode, connectNodes, disconnectNodes, updateNodeConnections, streamText]);
+  }, [
+    graph,
+    selectedNodeId,
+    lastCreatedNodeId,
+    chatMessages,
+    pendingNodeCreation,
+    pendingPipelineGeneration,
+    addChatMessage,
+    updateNodeCode,
+    updateNodeName,
+    updateNodeParallelization,
+    selectNode,
+    createNode,
+    connectNodes,
+    disconnectNodes,
+    updateNodeConnections,
+    streamText
+  ]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
