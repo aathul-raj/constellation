@@ -1,0 +1,245 @@
+.modalOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modalContent {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 800px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modalHeader h2 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.closeBtn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.closeBtn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.modalBody {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.saveSection {
+  margin-bottom: 32px;
+}
+
+.saveSection h3,
+.projectsList h3 {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.saveForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.projectNameInput {
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-family: inherit;
+}
+
+.projectNameInput:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.saveButtons {
+  display: flex;
+  gap: 8px;
+}
+
+.btnPrimary,
+.btnSecondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btnPrimary {
+  background: var(--accent-color);
+  color: white;
+  flex: 1;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btnSecondary {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btnSecondary:hover {
+  background: var(--bg-primary);
+}
+
+.loadingState,
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 20px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.loadingSpinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.emptyState svg {
+  color: var(--text-tertiary);
+  margin-bottom: 16px;
+}
+
+.emptyState p {
+  margin: 0;
+}
+
+.emptyHint {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin-top: 4px !important;
+}
+
+.projectsGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.projectCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.projectCard:hover {
+  border-color: var(--accent-color);
+  background: var(--bg-tertiary);
+}
+
+.projectCard.active {
+  border-color: var(--accent-color);
+  background: var(--bg-tertiary);
+}
+
+.projectInfo {
+  flex: 1;
+}
+
+.projectInfo h4 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.projectMeta {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.deleteBtn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.deleteBtn:hover {
+  background: rgba(255, 59, 48, 0.1);
+  color: #ff3b30;
+}

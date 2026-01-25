@@ -55,7 +55,7 @@ async function waitForJobCompletion(jobId: string, maxWaitMs: number = 3600000):
         return 'completed';
       } else if (status === 'FAILED') {
         throw new Error(`Job ${jobId} failed: ${job.statusReason || 'Unknown error'}`);
-      } else if (status === 'RUNNING' || status === 'RUNNABLE' || status === 'SUBMITTED' || status === 'PENDING') {
+      } else if (status === 'RUNNING' || status === 'RUNNABLE' || status === 'SUBMITTED' || status === 'PENDING' || status === 'STARTING') {
         // Still running, wait and retry
         await sleep(pollInterval);
         continue;
@@ -212,6 +212,26 @@ export async function POST(request: NextRequest) {
       console.log(`[${deploymentId}] Level ${levelIndex} completed`);
     }
 
+    // 4. Map compute node outputs to output-file nodes
+    const outputNodeUpdates: Array<{ nodeId: string; s3Key: string }> = [];
+
+    for (const [nodeId] of nodeResults) {
+      const computeNode = nodeMap.get(nodeId);
+      if (computeNode) {
+        // Find output-file nodes that are connected to this compute node
+        const outputNodes = graph.nodes.filter((n: any) =>
+          n.type === 'output-file' && n.in.includes(nodeId)
+        );
+
+        outputNodes.forEach((outputNode: any) => {
+          outputNodeUpdates.push({
+            nodeId: outputNode.id,
+            s3Key: `${nodeId}/output.csv`
+          });
+        });
+      }
+    }
+
     // 4. Return success response
     console.log(`[${deploymentId}] ✓ Deployment completed successfully`);
 
@@ -230,6 +250,7 @@ export async function POST(request: NextRequest) {
           nodeId,
           scriptKey
         })),
+        outputNodeUpdates,
         timestamp: new Date().toISOString()
       },
       { status: 200 }

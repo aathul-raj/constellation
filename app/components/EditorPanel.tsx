@@ -98,7 +98,7 @@ export default function EditorPanel() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const handleRun = useCallback(async () => {
+  const runDeployment = useCallback(async (endpoint: string, title: string) => {
     if (isRunning) return;
 
     setIsRunning(true);
@@ -106,8 +106,7 @@ export default function EditorPanel() {
     resetAllStatuses();
 
     try {
-      // Deploy to backend
-      const response = await fetch('/api/deploy-batch', {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ graph })
@@ -145,9 +144,32 @@ export default function EditorPanel() {
         setRunProgress(((index + 1) / computeNodeCount) * 100);
       });
 
+      // Handle output file updates for output-file nodes
+      const outputNodeUpdates = deployResult.outputNodeUpdates || [];
+
+      for (const update of outputNodeUpdates) {
+        if (update.csvContent) {
+          // Local deployment: CSV content is directly provided
+          updateNodeCsvData(update.nodeId, update.csvContent, `output-${Date.now()}.csv`);
+        } else if (update.s3Key) {
+          // AWS deployment: Fetch from S3
+          try {
+            const fileResponse = await fetch(`/api/files/${encodeURIComponent(update.s3Key)}`);
+            if (fileResponse.ok) {
+              const buffer = await fileResponse.arrayBuffer();
+              const decoder = new TextDecoder();
+              const csvContent = decoder.decode(buffer);
+              updateNodeCsvData(update.nodeId, csvContent, `output-${Date.now()}.csv`);
+            }
+          } catch (error) {
+            console.error(`Failed to fetch output file ${update.s3Key}:`, error);
+          }
+        }
+      }
+
       addNotification({
         type: 'success',
-        title: 'Pipeline Executed',
+        title: title,
         message: `Deployment ${deployResult.deploymentId.slice(0, 8)} completed successfully`
       });
     } catch (error) {
@@ -160,6 +182,14 @@ export default function EditorPanel() {
       setIsRunning(false);
     }
   }, [isRunning, graph, setIsRunning, setRunProgress, resetAllStatuses, updateNodeStatus, addNotification]);
+
+  const handleRun = useCallback(async () => {
+    await runDeployment('/api/deploy-batch', 'Pipeline Executed (AWS)');
+  }, [runDeployment]);
+
+  const handleRunLocal = useCallback(async () => {
+    await runDeployment('/api/deploy-local', 'Pipeline Executed (Local)');
+  }, [runDeployment]);
 
   const handleReset = useCallback(() => {
     resetAllStatuses();
@@ -177,7 +207,7 @@ export default function EditorPanel() {
     const file = e.target.files[0];
 
     try {
-      // For CSV files, load them locally first
+      // For CSV files, load them locally and upload to AWS automatically
       if (file.name.endsWith('.csv') || file.type === 'text/csv') {
         const storageKey = `csv-edit-${selectedNodeId}`;
 
@@ -187,19 +217,59 @@ export default function EditorPanel() {
 
         updateNodeCsvData(selectedNodeId, fileContent, file.name);
 
-        if (savedData) {
-          addNotification({
-            type: 'info',
-            title: 'Restored From Cache',
-            message: `${file.name} restored with your previous edits.`
+        // Automatically upload to AWS
+        setUploadingNodeId(selectedNodeId);
+
+        const blob = new Blob([fileContent], { type: 'text/csv' });
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', blob, file.name);
+
+        const uploadResponse = await fetch('/api/upload', {
+          method: 'POST',
+          body: uploadFormData
+        });
+
+        const uploadData = await uploadResponse.json();
+
+        if (uploadResponse.ok) {
+          // Analyze the file
+          const analyzeFormData = new FormData();
+          analyzeFormData.append('file', blob, file.name);
+
+          const analyzeResponse = await fetch('/api/analyze-file', {
+            method: 'POST',
+            body: analyzeFormData
           });
+
+          const metadata = await analyzeResponse.json();
+
+          updateNodeFile(selectedNodeId, uploadData.key, metadata);
+
+          // Mark CSV as uploaded
+          markCsvAsUploaded(selectedNodeId);
+
+          if (savedData) {
+            addNotification({
+              type: 'success',
+              title: 'File Restored & Uploaded',
+              message: `${file.name} restored with your previous edits and uploaded to AWS.`
+            });
+          } else {
+            addNotification({
+              type: 'success',
+              title: 'File Uploaded',
+              message: `${file.name} uploaded to AWS successfully.`
+            });
+          }
         } else {
           addNotification({
-            type: 'info',
-            title: 'File Loaded',
-            message: `${file.name} loaded. Edit and review before uploading to AWS.`
+            type: 'error',
+            title: 'Upload Failed',
+            message: uploadData.error
           });
         }
+
+        setUploadingNodeId(null);
       } else {
         // For non-CSV files, upload directly
         setUploadingNodeId(selectedNodeId);
@@ -250,63 +320,6 @@ export default function EditorPanel() {
       e.target.value = '';
     }
   }, [selectedNodeId, updateNodeCsvData, updateNodeFile, addNotification]);
-
-  const handleUploadToAWS = useCallback(async () => {
-    if (!selectedNodeId || !selectedNode?.csvData || !selectedNode?.fileName) return;
-
-    setUploadingNodeId(selectedNodeId);
-
-    try {
-      const blob = new Blob([selectedNode.csvData], { type: 'text/csv' });
-      const uploadFormData = new FormData();
-      uploadFormData.append('file', blob, selectedNode.fileName);
-
-      const uploadResponse = await fetch('/api/upload', {
-        method: 'POST',
-        body: uploadFormData
-      });
-
-      const uploadData = await uploadResponse.json();
-
-      if (uploadResponse.ok) {
-        // Analyze the file
-        const analyzeFormData = new FormData();
-        analyzeFormData.append('file', blob, selectedNode.fileName);
-
-        const analyzeResponse = await fetch('/api/analyze-file', {
-          method: 'POST',
-          body: analyzeFormData
-        });
-
-        const metadata = await analyzeResponse.json();
-
-        updateNodeFile(selectedNodeId, uploadData.key, metadata);
-
-        // Mark CSV as uploaded (don't clear csvData, just mark it)
-        markCsvAsUploaded(selectedNodeId);
-
-        addNotification({
-          type: 'success',
-          title: 'File Uploaded',
-          message: `${selectedNode.fileName} uploaded to AWS`
-        });
-      } else {
-        addNotification({
-          type: 'error',
-          title: 'Upload Failed',
-          message: uploadData.error
-        });
-      }
-    } catch (error) {
-      addNotification({
-        type: 'error',
-        title: 'Upload Error',
-        message: error instanceof Error ? error.message : 'Failed to upload file to AWS'
-      });
-    } finally {
-      setUploadingNodeId(null);
-    }
-  }, [selectedNodeId, selectedNode, updateNodeFile, markCsvAsUploaded, addNotification]);
 
   const handleFileDownload = useCallback(() => {
     if (!selectedNode?.fileId) return;
@@ -547,9 +560,7 @@ export default function EditorPanel() {
                 data={selectedNode.csvData}
                 fileName={selectedNode.fileName || 'Untitled'}
                 nodeId={selectedNodeId!}
-                hasUnsavedChanges={selectedNode.csvData !== selectedNode.lastUploadedCsvData}
                 onDataChange={(data) => updateNodeCsvData(selectedNodeId!, data, selectedNode.fileName)}
-                onUpload={handleUploadToAWS}
                 onCancel={() => {
                   clearNodeCsvData(selectedNodeId!);
                   const storageKey = `csv-edit-${selectedNodeId}`;
@@ -631,12 +642,22 @@ export default function EditorPanel() {
             Reset
           </button>
           <button
+            className={`btn btn-secondary ${isRunning ? 'running' : ''}`}
+            onClick={handleRunLocal}
+            disabled={isRunning}
+            title="Run locally on this machine (requires Python 3)"
+          >
+            <Play size={16} />
+            {isRunning ? 'Running...' : 'Run Locally'}
+          </button>
+          <button
             className={`btn btn-primary ${isRunning ? 'running' : ''}`}
             onClick={handleRun}
             disabled={isRunning}
+            title="Run on AWS Batch"
           >
             <Play size={16} />
-            {isRunning ? 'Running...' : 'Run'}
+            {isRunning ? 'Running...' : 'Run on AWS'}
           </button>
         </div>
       </div>
