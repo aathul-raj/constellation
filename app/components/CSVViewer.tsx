@@ -24,7 +24,7 @@ export default function CSVViewer({ data, fileName, onDownload }: CSVViewerProps
   // Parse CSV data once
   const parsedData = useMemo(() => {
     const lines = data.trim().split('\n');
-    if (lines.length === 0) return { headers: [], rows: [] };
+    if (lines.length === 0) return [];
 
     return lines.map(line => {
       // Handle quoted CSV fields properly
