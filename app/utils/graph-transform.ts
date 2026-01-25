@@ -45,18 +45,47 @@ export function transformToReagraph(graph: HPCGraph): ReagraphData {
   return { nodes, edges };
 }
 
-export function getStatusColor(status: NodeStatus): string {
-  switch (status) {
-    case 'queued':
-      return '#9ca3af'; // Light Gray
-    case 'running':
-      return '#3b82f6'; // Blue
-    case 'completed':
-      return '#22c55e'; // Green
-    case 'failed':
-      return '#ef4444'; // Red
-    default:
-      return '#9ca3af';
+export function getStatusColor(status: NodeStatus, is3D: boolean = false, isDark: boolean = true): string {
+  if (is3D) {
+    if (isDark) {
+      // Dark mode 3D: High-vibrancy tints to combat 3D shadows
+      switch (status) {
+        case 'queued': return '#e5e7eb';    // Gray 200
+        case 'running': return '#93c5fd';   // Blue 300
+        case 'completed': return '#86efac'; // Green 300
+        case 'failed': return '#fca5a5';    // Red 300
+        default: return '#e5e7eb';
+      }
+    } else {
+      // Light mode 3D: Deeper shades to maintain contrast against white
+      switch (status) {
+        case 'queued': return '#6b7280';    // Gray 500
+        case 'running': return '#2563eb';   // Blue 600
+        case 'completed': return '#16a34a'; // Green 600
+        case 'failed': return '#dc2626';    // Red 600
+        default: return '#6b7280';
+      }
+    }
+  }
+
+  // 2D mode: Adjusted to match the "perceived" brightness of 3D
+  if (isDark) {
+    switch (status) {
+      case 'queued': return '#d1d5db';    // Gray 300 (Lighter than your original)
+      case 'running': return '#60a5fa';   // Blue 400 (Softer, glowing feel)
+      case 'completed': return '#4ade80'; // Green 400 (Vibrant, matching 3D "lit" green)
+      case 'failed': return '#f87171';    // Red 400 (Less "heavy" than original red)
+      default: return '#d1d5db';
+    }
+  } else {
+    // 2D Light Mode: Generally matches the 3D Light Mode shades
+    switch (status) {
+      case 'queued': return '#6b7280';
+      case 'running': return '#3b82f6';
+      case 'completed': return '#22c55e';
+      case 'failed': return '#ef4444';
+      default: return '#6b7280';
+    }
   }
 }
 

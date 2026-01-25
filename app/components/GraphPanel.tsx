@@ -10,7 +10,7 @@ import { ConnectionToolbar } from './ConnectionToolbar';
 import { DeleteEdgeToolbar } from './DeleteEdgeToolbar';
 
 export default function GraphPanel() {
-  const { graph, selectedNodeId, selectNode, setGraph } = useHPCStore();
+  const { graph, selectedNodeId, selectNode, setGraph, theme } = useHPCStore();
   const graphRef = useRef<GraphCanvasRef>(null);
   const [layoutType, setLayoutType] = useState<LayoutTypes>('forceDirected2d');
   const [is3D, setIs3D] = useState(false);
@@ -27,10 +27,10 @@ export default function GraphPanel() {
     nodes.map((node) => ({
       id: node.id,
       label: node.label,
-      fill: getStatusColor(node.data?.status || 'queued'),
+      fill: getStatusColor(node.data?.status || 'queued', is3D, theme === 'dark'),
       data: node.data
     })),
-    [nodes]
+    [nodes, is3D, theme]
   );
 
   const graphEdges: GraphEdge[] = useMemo(() =>
@@ -271,44 +271,48 @@ export default function GraphPanel() {
     }, 1000);
   }, [nodes]);
 
-  const customTheme = {
-    ...darkTheme,
-    canvas: {
-      ...darkTheme.canvas,
-      background: '#0a0a0f',
-      fog: '#0a0a0f'
-    },
-    ring: {
-      ...darkTheme.ring,
-      fill: 'rgba(0, 0, 0, 0)',
-      activeFill: '#3b82f6',
-    },
-    edge: {
-      ...darkTheme.edge,
-      fill: '#3b82f6',
-      activeFill: '#60a5fa',
-      opacity: 0.8,
-      selectedOpacity: 1,
-      inactiveOpacity: 0.8,
-    },
-    arrow: {
-      ...darkTheme.arrow,
-      fill: '#3b82f6',
-      activeFill: '#60a5fa',
-    },
-    node: {
-      ...darkTheme.node,
-      fill: '#1f2937',
-      activeFill: '#3b82f6',
-      opacity: 0.9,
-      selectedOpacity: 1,
-      inactiveOpacity: 0.9,
-      label: {
-        color: '#475569',
-        // stroke: '#fff',
-        activeColor: '#3b82f6'
+  const customTheme = useMemo(() => {
+    const isDark = theme === 'dark';
+
+    return {
+      ...darkTheme,
+      canvas: {
+        ...darkTheme.canvas,
+        background: isDark ? '#0a0a0f' : '#fafafa',
+        fog: isDark ? '#0a0a0f' : '#fafafa'
+      },
+      ring: {
+        ...darkTheme.ring,
+        fill: 'rgba(0, 0, 0, 0)',
+        activeFill: isDark ? '#3b82f6' : '#2563eb',
+      },
+      edge: {
+        ...darkTheme.edge,
+        fill: isDark ? '#3b82f6' : '#2563eb',
+        activeFill: isDark ? '#60a5fa' : '#3b82f6',
+        opacity: 0.8,
+        selectedOpacity: 1,
+        inactiveOpacity: 0.8,
+      },
+      arrow: {
+        ...darkTheme.arrow,
+        fill: isDark ? '#3b82f6' : '#2563eb',
+        activeFill: isDark ? '#60a5fa' : '#3b82f6',
+      },
+      node: {
+        ...darkTheme.node,
+        fill: isDark ? '#1f2937' : '#e5e7eb',       // prolly useless
+        activeFill: isDark ? '#3b82f6' : '#2563eb', // prolly useless
+        opacity: 0.9,
+        selectedOpacity: 1,
+        inactiveOpacity: 0.9,
+        label: { //text
+          color: isDark ? '#9ca3af' : '#4b5563',
+          activeColor: isDark ? '#3b82f6' : '#2563eb'
+        }
       }
-    }};
+    };
+  }, [theme]);
 
   const sourceNodeName = graph.nodes.find(n => n.id === connectionSource)?.name;
   const targetNodeName = graph.nodes.find(n => n.id === connectionTarget)?.name;
