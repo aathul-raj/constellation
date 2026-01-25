@@ -102,33 +102,23 @@ if __name__ == "__main__":
   }
 
   script += `
-        # Write output to local file or S3
-        if os.path.dirname(OUTPUT_PATH):
-            os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+        # Write output to S3
+        print(f"Writing output to S3: s3://{BUCKET_NAME}/{OUTPUT_PATH}")
 
-        print(f"Writing output to {OUTPUT_PATH}")
-
-        # Try local filesystem first
         try:
-            result.to_csv(OUTPUT_PATH, index=False)
-            print("Output written to local filesystem")
+            csv_buffer = StringIO()
+            result.to_csv(csv_buffer, index=False)
+            s3_client.put_object(
+                Bucket=BUCKET_NAME,
+                Key=OUTPUT_PATH,
+                Body=csv_buffer.getvalue().encode('utf-8')
+            )
+            print("Output written to S3 successfully")
         except Exception as e:
-            # Fall back to S3 if local write fails
-            if HAS_S3:
-                try:
-                    print("Attempting to write to S3...")
-                    csv_buffer = StringIO()
-                    result.to_csv(csv_buffer, index=False)
-                    s3_client.put_object(
-                        Bucket=BUCKET_NAME,
-                        Key=OUTPUT_PATH,
-                        Body=csv_buffer.getvalue().encode('utf-8')
-                    )
-                    print("Output written to S3")
-                except Exception as s3_error:
-                    raise Exception(f"Could not write output to local filesystem or S3: {e} / {s3_error}")
-            else:
-                raise e
+            print(f"Error writing to S3: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            raise Exception(f"Could not write output to S3: {e}")
 
         print("Task completed successfully")
 
