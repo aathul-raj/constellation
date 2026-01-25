@@ -176,6 +176,8 @@ export default function EditorPanel() {
         // Clear window cache for this node
         if ((window as any).__outputFiles?.[nodeId]) {
           delete (window as any).__outputFiles[nodeId];
+          // Persist the update to localStorage
+          localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
         }
         // Reset output file viewer index
         setSelectedOutputFileIndex(0);
@@ -207,6 +209,8 @@ export default function EditorPanel() {
             if (fetchedFiles.length > 1) {
               (window as any).__outputFiles = (window as any).__outputFiles || {};
               (window as any).__outputFiles[nodeId] = fetchedFiles;
+              // Persist to localStorage
+              localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
 
               addNotification({
                 type: 'info',
@@ -226,7 +230,9 @@ export default function EditorPanel() {
               fileName: u.fileName,
               content: u.csvContent
             }));
-            
+            // Persist to localStorage
+            localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
+
             addNotification({
               type: 'info',
               title: 'Multiple Output Files',
@@ -558,6 +564,18 @@ export default function EditorPanel() {
     }
   }, [isDropdownOpen]);
 
+  // Load output files from localStorage on mount
+  useEffect(() => {
+    const savedOutputFiles = localStorage.getItem('outputFiles');
+    if (savedOutputFiles) {
+      try {
+        (window as any).__outputFiles = JSON.parse(savedOutputFiles);
+      } catch (error) {
+        console.error('Failed to load output files from localStorage:', error);
+      }
+    }
+  }, []);
+
   const getTypeIcon = (type: string) => {
     switch (type) {
       case 'input-file':
@@ -697,7 +715,6 @@ export default function EditorPanel() {
                         <button
                           className="file-download-btn"
                           onClick={handleDownloadAllAsZip}
-                          style={{ background: 'var(--accent-primary)', color: 'white' }}
                         >
                           <Download size={14} />
                           <span>Download All ({(window as any).__outputFiles[selectedNode.id].length} files)</span>
