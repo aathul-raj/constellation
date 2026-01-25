@@ -562,6 +562,8 @@ export default function EditorPanel() {
     const file = selectedNode.files[fileIndex];
     if (!file) return;
 
+    // Clear previous content immediately to avoid showing stale data
+    setInputFileContent(null);
     setLoadingInputFile(true);
     try {
       const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`);
@@ -591,6 +593,9 @@ export default function EditorPanel() {
     if (selectedNode?.type === 'input-file' && selectedNode.files && selectedNode.files.length > 0 && !selectedNode.csvData) {
       setSelectedInputFileIndex(0);
       handleInputFileSelect(0);
+    } else if (selectedNode?.type === 'input-file' && (!selectedNode.files || selectedNode.files.length === 0)) {
+      setInputFileContent(null);
+      setSelectedInputFileIndex(0);
     } else if (selectedNode?.type !== 'input-file') {
       setInputFileContent(null);
       setSelectedInputFileIndex(0);
@@ -997,7 +1002,14 @@ export default function EditorPanel() {
                 )}
               </>
             )}
-            {selectedNode.type !== 'compute' && !selectedNode.csvData && !inputFileContent && (
+            {selectedNode.type === 'input-file' && !selectedNode.csvData && !inputFileContent && loadingInputFile && (
+              <div className="empty-state">
+                <HardDrive size={48} strokeWidth={1} />
+                <h3>Loading File...</h3>
+                <p>Fetching file content from storage</p>
+              </div>
+            )}
+            {selectedNode.type !== 'compute' && !selectedNode.csvData && !inputFileContent && !loadingInputFile && (
               <div className="empty-state">
                 <HardDrive size={48} strokeWidth={1} />
                 <h3>{selectedNode.type === 'input-file' ? 'Input File' : 'Output File'}</h3>
