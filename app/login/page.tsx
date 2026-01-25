@@ -263,7 +263,7 @@ export default function LandingPage() {
           <span>Constellation</span>
         </div>
         <p className={styles.footerCredits}>
-          Built by Athul, Cameron, Josh, and Justus for TAMUHack 26'.
+          Built by Athul, Cameron, Josh, and Justus for TAMUHack '26.
         </p>
       </footer>
     </div>
