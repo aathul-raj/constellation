@@ -42,7 +42,7 @@ export default function CSVViewer({ data, fileName, onDownload }: CSVViewerProps
   const columnCount = spreadsheetData[0]?.length || 0;
 
   return (
-    <div className="csv-viewer-container">
+    <div className="csv-editor-container">
       <div className="csv-header">
         <div className="csv-info">
           <h3 className="csv-filename">{fileName}</h3>
@@ -51,16 +51,12 @@ export default function CSVViewer({ data, fileName, onDownload }: CSVViewerProps
         <div className="csv-actions">
           <button className="csv-save-btn" onClick={handleSaveToComputer}>
             <Download size={14} />
-            <span>Download</span>
+            <span>Save</span>
           </button>
-          {/* <button className="csv-download-btn" onClick={onDownload}>
-            <Download size={14} />
-            <span>Download</span>
-          </button> */}
         </div>
       </div>
 
-      <div className="csv-spreadsheet-wrapper csv-read-only">
+      <div className="csv-spreadsheet-wrapper">
         <Spreadsheet
           data={spreadsheetData}
           onChange={() => {}} // Read-only, ignore changes

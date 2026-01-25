@@ -1,6 +1,6 @@
 export type NodeType = 'input-file' | 'compute' | 'output-file';
 
-export type IntentType = 'create_node' | 'update_code' | 'update_name' | 'chat';
+export type IntentType = 'create_node' | 'update_code' | 'update_name' | 'edit_node' | 'chat';
 
 export type CompletionStatus = 'complete' | 'needs_clarification' | 'error';
 
@@ -40,6 +40,27 @@ export interface UpdateNameIntent {
   message?: string;
 }
 
+export interface EditNodeIntent {
+  intent: 'edit_node';
+  nodeId?: string;
+  nodeName?: string;
+  // For compute/input/output: which nodes to connect to/from
+  newInConnections?: string[]; // Node IDs to connect FROM
+  newOutConnections?: string[]; // Node IDs to connect TO
+  addInConnections?: string[]; // Node IDs to add as inputs
+  addOutConnections?: string[]; // Node IDs to add as outputs
+  removeInConnections?: string[]; // Node IDs to remove from inputs
+  removeOutConnections?: string[]; // Node IDs to remove from outputs
+  // For compute nodes: new code
+  newCode?: string;
+  parallelization?: {
+    strategy: 'map' | 'reduce' | 'map-reduce' | 'vectorized' | 'sequential';
+    estimatedCores?: number;
+    chunkSize?: number;
+  };
+  message?: string;
+}
+
 export interface ChatIntent {
   intent: 'chat';
   message?: string;
@@ -53,5 +74,6 @@ export type AIResponse =
   | NodeCreationIntent
   | UpdateCodeIntent
   | UpdateNameIntent
+  | EditNodeIntent
   | ChatIntent
   | ErrorResponse;
