@@ -62,6 +62,7 @@ export default function EditorPanel() {
   const [outputAnalysis, setOutputAnalysis] = useState<string | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisExpanded, setAnalysisExpanded] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const consoleRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -354,9 +355,12 @@ export default function EditorPanel() {
 
     const files = Array.from(e.target.files);
     setUploadingNodeId(selectedNodeId);
+    setUploadProgress(0);
 
     try {
-      for (const file of files) {
+      for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+        const file = files[fileIdx];
+        
         // Only accept CSV and ZIP files
         if (!file.name.endsWith('.csv') && !file.name.endsWith('.zip')) {
           addNotification({
@@ -367,84 +371,127 @@ export default function EditorPanel() {
           continue;
         }
 
-        // Upload to AWS
-        const uploadFormData = new FormData();
-        uploadFormData.append('file', file);
+        // Upload to AWS using XMLHttpRequest for progress tracking
+        const uploadStartTime = Date.now();
+        const uploadCompleteProgress = .7; // Cap upload at 70%
 
-        const uploadResponse = await fetch('/api/upload', {
-          method: 'POST',
-          body: uploadFormData
-        });
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          const uploadFormData = new FormData();
+          uploadFormData.append('file', file);
 
-        const uploadData = await uploadResponse.json();
-
-        if (uploadResponse.ok) {
-          // Check if this is a ZIP file response (multiple files) or single file
-          if (uploadData.files && Array.isArray(uploadData.files)) {
-            // ZIP file - multiple CSVs extracted
-            for (const uploadedFile of uploadData.files) {
-              // Analyze each CSV
-              const analyzeFormData = new FormData();
-
-              // Fetch the file from S3 to analyze it
-              const fileResponse = await fetch(`/api/files/${encodeURIComponent(uploadedFile.key)}`);
-              const fileBlob = await fileResponse.blob();
-              const csvFile = new File([fileBlob], uploadedFile.originalName, { type: 'text/csv' });
-
-              analyzeFormData.append('file', csvFile);
-
-              const analyzeResponse = await fetch('/api/analyze-file', {
-                method: 'POST',
-                body: analyzeFormData
-              });
-
-              const metadata = await analyzeResponse.json();
-
-              // Add file to the node's files array
-              addNodeFile(selectedNodeId, {
-                id: uploadedFile.key,
-                name: uploadedFile.originalName,
-                metadata: metadata
-              });
+          // Track upload progress (0-70%)
+          xhr.upload.addEventListener('progress', (e: ProgressEvent) => {
+            if (e.lengthComputable) {
+              const uploadPercent = (e.loaded / e.total) * 100;
+              // Scale to 0-70% and account for file index
+              const scaledProgress = (uploadPercent / files.length) * uploadCompleteProgress;
+              const fileOffsetProgress = (fileIdx / files.length) * uploadCompleteProgress;
+              setUploadProgress(Math.round(fileOffsetProgress + scaledProgress));
             }
-
-            addNotification({
-              type: 'success',
-              title: 'ZIP Extracted',
-              message: `${uploadData.count} CSV file(s) uploaded from ${file.name}`
-            });
-          } else {
-            // Single CSV file
-            const analyzeFormData = new FormData();
-            analyzeFormData.append('file', file);
-
-            const analyzeResponse = await fetch('/api/analyze-file', {
-              method: 'POST',
-              body: analyzeFormData
-            });
-
-            const metadata = await analyzeResponse.json();
-
-            // Add file to the node's files array
-            addNodeFile(selectedNodeId, {
-              id: uploadData.key,
-              name: file.name,
-              metadata: metadata
-            });
-
-            addNotification({
-              type: 'success',
-              title: 'File Uploaded',
-              message: `${file.name} uploaded to AWS successfully`
-            });
-          }
-        } else {
-          addNotification({
-            type: 'error',
-            title: 'Upload Failed',
-            message: uploadData.error || 'Failed to upload file'
           });
-        }
+
+          xhr.addEventListener('load', async () => {
+            if (xhr.status === 200) {
+              try {
+                const uploadData = JSON.parse(xhr.responseText);
+                
+                // Mark upload as complete, set to 70%
+                setUploadProgress(uploadCompleteProgress);
+
+                // Check if this is a ZIP file response (multiple files) or single file
+                if (uploadData.files && Array.isArray(uploadData.files)) {
+                  // ZIP file - multiple CSVs extracted
+                  const analysisStartTime = Date.now();
+                  
+                  for (let idx = 0; idx < uploadData.files.length; idx++) {
+                    const uploadedFile = uploadData.files[idx];
+                    
+                    // Estimate analysis progress (70-100%)
+                    const analysisFraction = (idx / uploadData.files.length) * 30;
+                    setUploadProgress(Math.round(uploadCompleteProgress + analysisFraction));
+
+                    // Analyze each CSV
+                    const analyzeFormData = new FormData();
+
+                    // Fetch the file from S3 to analyze it
+                    const fileResponse = await fetch(`/api/files/${encodeURIComponent(uploadedFile.key)}`);
+                    const fileBlob = await fileResponse.blob();
+                    const csvFile = new File([fileBlob], uploadedFile.originalName, { type: 'text/csv' });
+
+                    analyzeFormData.append('file', csvFile);
+
+                    const analyzeResponse = await fetch('/api/analyze-file', {
+                      method: 'POST',
+                      body: analyzeFormData
+                    });
+
+                    const metadata = await analyzeResponse.json();
+
+                    // Add file to the node's files array
+                    addNodeFile(selectedNodeId, {
+                      id: uploadedFile.key,
+                      name: uploadedFile.originalName,
+                      metadata: metadata
+                    });
+                  }
+
+                  addNotification({
+                    type: 'success',
+                    title: 'ZIP Extracted',
+                    message: `${uploadData.count} CSV file(s) uploaded from ${file.name}`
+                  });
+                } else {
+                  // Single CSV file
+                  setUploadProgress(Math.round(uploadCompleteProgress + 15)); // 85% during analysis
+                  
+                  const analyzeFormData = new FormData();
+                  analyzeFormData.append('file', file);
+
+                  const analyzeResponse = await fetch('/api/analyze-file', {
+                    method: 'POST',
+                    body: analyzeFormData
+                  });
+
+                  const metadata = await analyzeResponse.json();
+
+                  // Add file to the node's files array
+                  addNodeFile(selectedNodeId, {
+                    id: uploadData.key,
+                    name: file.name,
+                    metadata: metadata
+                  });
+
+                  addNotification({
+                    type: 'success',
+                    title: 'File Uploaded',
+                    message: `${file.name} uploaded to AWS successfully`
+                  });
+                }
+
+                // Complete this file's upload
+                setUploadProgress(Math.round(((fileIdx + 1) / files.length) * 100));
+                resolve();
+              } catch (error) {
+                reject(error);
+              }
+            } else {
+              try {
+                const uploadData = JSON.parse(xhr.responseText);
+                reject(new Error(uploadData.error || 'Failed to upload file'));
+              } catch {
+                reject(new Error('Upload failed'));
+              }
+            }
+          });
+
+          xhr.addEventListener('error', () => {
+            reject(new Error('Upload failed'));
+          });
+
+          xhr.open('POST', '/api/upload');
+          xhr.send(uploadFormData);
+        });
       }
     } catch (error) {
       addNotification({
@@ -454,6 +501,7 @@ export default function EditorPanel() {
       });
     } finally {
       setUploadingNodeId(null);
+      setUploadProgress(0);
       e.target.value = '';
     }
   }, [selectedNodeId, addNodeFile, addNotification]);
@@ -812,19 +860,35 @@ export default function EditorPanel() {
               {selectedNode.type === 'input-file' && (
                 <>
                   <div className="file-upload-section">
-                    <label className="file-upload-btn">
-                      <Upload size={14} />
-                      <span>Upload Files</span>
-                      <input
-                        type="file"
-                        accept=".csv,.zip"
-                        multiple
-                        onChange={handleFileUpload}
-                        disabled={uploadingNodeId === selectedNodeId}
-                        style={{ display: 'none' }}
-                      />
-                    </label>
-                    <span className="file-upload-hint">CSV or ZIP files</span>
+                    {uploadingNodeId === selectedNodeId ? (
+                      <div className="file-upload-progress">
+                        <div className="progress-bar-wrapper">
+                          <div className="progress-bar-background">
+                            <div 
+                              className="progress-bar-fill"
+                              style={{ width: `${uploadProgress}%` }}
+                            />
+                          </div>
+                          <span className="progress-text">Uploading...</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <label className="file-upload-btn">
+                          <Upload size={14} />
+                          <span>Upload Files</span>
+                          <input
+                            type="file"
+                            accept=".csv,.zip"
+                            multiple
+                            onChange={handleFileUpload}
+                            disabled={uploadingNodeId !== null}
+                            style={{ display: 'none' }}
+                          />
+                        </label>
+                        <span className="file-upload-hint">CSV or ZIP files</span>
+                      </>
+                    )}
                   </div>
                   {selectedNode.files && selectedNode.files.length > 0 && (
                     <div className="input-files-dropdown" ref={dropdownRef}>
