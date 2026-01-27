@@ -261,6 +261,52 @@ MERGE CHECKLIST:
 3. Output row count should be approximately equal to input row count (not multiplied)
 4. If inputs have 50k rows each, output should have ~50k rows, NOT millions/billions
 
+**CRITICAL - MERGE NODE CODE (DO NOT ASSUME COLUMN NAMES)**:
+When writing code for a merge/combiner node that combines outputs from parallel branches:
+
+1. DO NOT assume what columns the upstream nodes created - you don't know the exact column names
+2. DO NOT try to select specific computed columns by name (they may have different names)
+3. INSTEAD, use this safe pattern that merges ALL columns from each input:
+
+WRONG (assumes column names that may not exist):
+\`\`\`python
+def task(temperature_ma, ph_ma):
+    # BAD: Assumes 'temperature_moving_average' column exists
+    temp_cols = temperature_ma[['id', 'time', 'temperature_moving_average']]  # KeyError!
+    ph_cols = ph_ma[['id', 'time', 'ph_moving_average']]  # KeyError!
+    return temp_cols.merge(ph_cols, on=['id', 'time'])
+\`\`\`
+
+RIGHT (merges all columns without assuming names):
+\`\`\`python
+def task(temperature_ma, ph_ma):
+    # GOOD: Find common ID/key columns that exist in BOTH dataframes
+    common_cols = list(set(temperature_ma.columns) & set(ph_ma.columns))
+
+    # Identify merge keys (ID columns, timestamps, etc.)
+    key_patterns = ['id', 'time', 'date', 'batch', 'sample', 'experiment', 'index']
+    merge_keys = [c for c in common_cols if any(p in c.lower() for p in key_patterns)]
+
+    if not merge_keys:
+        # Fallback: merge on index if no common key columns
+        return temperature_ma.join(ph_ma.drop(columns=common_cols, errors='ignore'), how='outer')
+
+    # Merge on the key columns - this brings in ALL columns from both dataframes
+    # including whatever new columns each upstream node computed
+    result = temperature_ma.merge(ph_ma, on=merge_keys, how='outer', suffixes=('', '_dup'))
+
+    # Remove any duplicate columns (columns that existed in both inputs)
+    dup_cols = [c for c in result.columns if c.endswith('_dup')]
+    result = result.drop(columns=dup_cols, errors='ignore')
+
+    return result
+\`\`\`
+
+This pattern works because:
+- It dynamically finds common columns to use as merge keys
+- It brings in ALL columns from both inputs (including computed ones)
+- It doesn't assume any specific column names from upstream processing
+
 EXAMPLE - Good (Consistent Naming):
 def task(my_data):
     import pandas as pd

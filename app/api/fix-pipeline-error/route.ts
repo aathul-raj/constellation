@@ -168,6 +168,55 @@ ${userCode}
 
 Return ONLY the fixed code. No explanations.`;
 
+    } else if (errorType === 'KeyError') {
+      // KeyError usually means trying to access a column that doesn't exist
+      // Common in merge operations where the AI assumed wrong column names
+      prompt = `Fix this KeyError. The code is trying to access a column that doesn't exist.
+
+**ERROR:** ${cleanMessage}
+${problemLineContext}
+
+**SIGNATURE:** ${correctSignature}
+**PARAMETERS:** ${upstreamContext || '(none)'}
+
+**CODE:**
+\`\`\`python
+${userCode}
+\`\`\`
+
+**THE PROBLEM:** The code assumes specific column names that don't exist in the input dataframes.
+This often happens in merge/combiner nodes where upstream nodes computed new columns with different names than expected.
+
+**FIX STRATEGY - Use this safe merge pattern that doesn't assume column names:**
+\`\`\`python
+def task(df1, df2):  # or however many inputs
+    # Find common columns to use as merge keys (ID columns, timestamps, etc.)
+    common_cols = list(set(df1.columns) & set(df2.columns))
+    key_patterns = ['id', 'time', 'date', 'batch', 'sample', 'experiment', 'index']
+    merge_keys = [c for c in common_cols if any(p in c.lower() for p in key_patterns)]
+
+    if not merge_keys:
+        # Fallback: use index
+        return df1.join(df2.drop(columns=common_cols, errors='ignore'), how='outer')
+
+    # Merge brings in ALL columns from both dataframes
+    result = df1.merge(df2, on=merge_keys, how='outer', suffixes=('', '_dup'))
+
+    # Remove duplicate columns
+    dup_cols = [c for c in result.columns if c.endswith('_dup')]
+    result = result.drop(columns=dup_cols, errors='ignore')
+
+    return result
+\`\`\`
+
+**RULES:**
+1. DO NOT assume what columns the upstream nodes created
+2. DO NOT hardcode column names like 'temperature_moving_average' or 'ph_ma_30min'
+3. Use the safe merge pattern above that works regardless of column names
+4. Keep signature: ${correctSignature}
+
+Return ONLY the fixed code. No explanations.`;
+
     } else {
       prompt = `Fix this Python error. Make MINIMAL changes only.
 
