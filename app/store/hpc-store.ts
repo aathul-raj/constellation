@@ -67,6 +67,7 @@ export interface ConsoleLog {
   timestamp: Date;
   nodeId?: string;
   nodeName?: string;
+  isElapsedUpdate?: boolean; // Flag for elapsed time updates (can be replaced in UI)
 }
 
 interface HPCStore {
@@ -452,16 +453,37 @@ export const useHPCStore = create<HPCStore>()(
     notifications: state.notifications.filter(n => n.id !== id)
   })),
 
-  addConsoleLog: (log) => set((state) => ({
-    consoleLogs: [
-      ...state.consoleLogs,
-      {
-        ...log,
-        id: crypto.randomUUID(),
-        timestamp: new Date()
-      }
-    ]
-  })),
+  addConsoleLog: (log) => set((state) => {
+    // For elapsed time updates, replace the previous elapsed update for the same node
+    // instead of stacking multiple "Running... (Xs)" messages
+    if (log.isElapsedUpdate && log.nodeId) {
+      const filteredLogs = state.consoleLogs.filter(
+        l => !(l.isElapsedUpdate && l.nodeId === log.nodeId)
+      );
+      return {
+        consoleLogs: [
+          ...filteredLogs,
+          {
+            ...log,
+            id: crypto.randomUUID(),
+            timestamp: new Date()
+          }
+        ]
+      };
+    }
+
+    // Regular log - just append
+    return {
+      consoleLogs: [
+        ...state.consoleLogs,
+        {
+          ...log,
+          id: crypto.randomUUID(),
+          timestamp: new Date()
+        }
+      ]
+    };
+  }),
 
   clearConsoleLogs: () => set({
     consoleLogs: []

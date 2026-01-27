@@ -223,6 +223,44 @@ When a function has multiple parameters (e.g., def task(time_moving_average, tem
 - RIGHT: pd.merge(time_moving_average, temperature_moving_average, ...)  ← uses exact param name
 - Check your code: every variable reference MUST either be (1) a parameter name, (2) defined with = assignment, or (3) imported
 
+**CRITICAL - MERGE OPERATIONS (PREVENT CARTESIAN PRODUCTS)**:
+When merging multiple dataframes, you MUST specify the merge key(s) to avoid exploding row counts:
+
+WRONG (causes cartesian product - EXPONENTIAL row explosion):
+\`\`\`python
+# This will multiply rows: 50k × 50k × 50k = DISASTER
+result = df1.merge(df2).merge(df3)  # NO 'on' parameter!
+result = pd.concat([df1, df2, df3])  # Stacks rows vertically
+\`\`\`
+
+RIGHT (preserves row count):
+\`\`\`python
+# ALWAYS specify the merge key(s) - typically timestamp, index, or ID columns
+# First, identify common columns that should be used as merge keys
+common_cols = list(set(df1.columns) & set(df2.columns) & set(df3.columns))
+# Likely keys: timestamp, date, time, batch_id, index, id, etc.
+merge_key = [c for c in common_cols if 'time' in c.lower() or 'date' in c.lower() or 'batch' in c.lower() or 'id' in c.lower() or c == 'index'][0] if common_cols else df1.index.name
+
+# Option 1: Merge on index (if dataframes share the same index)
+result = df1.join([df2, df3], how='outer')
+
+# Option 2: Merge on specific column(s)
+result = df1.merge(df2, on=['timestamp'], how='outer')
+result = result.merge(df3, on=['timestamp'], how='outer')
+
+# Option 3: For column-wise concatenation (same rows, different columns)
+# Reset index first to ensure alignment
+result = pd.concat([df1.reset_index(drop=True),
+                    df2.reset_index(drop=True).drop(columns=common_cols, errors='ignore'),
+                    df3.reset_index(drop=True).drop(columns=common_cols, errors='ignore')], axis=1)
+\`\`\`
+
+MERGE CHECKLIST:
+1. ALWAYS specify 'on' parameter OR use .join() with aligned indexes
+2. NEVER merge without specifying how rows should match
+3. Output row count should be approximately equal to input row count (not multiplied)
+4. If inputs have 50k rows each, output should have ~50k rows, NOT millions/billions
+
 EXAMPLE - Good (Consistent Naming):
 def task(my_data):
     import pandas as pd

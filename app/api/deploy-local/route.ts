@@ -1,13 +1,19 @@
 import { NextRequest } from 'next/server';
 import { execFile } from 'child_process';
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync, statSync, readdirSync, rmSync, createReadStream } from 'fs';
 import { join } from 'path';
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import { createExecutableScript } from '@/app/utils/code-wrapper';
 import { getExecutionLevels } from '@/app/utils/graph-transform';
 import { promisify } from 'util';
+import { execSync } from 'child_process';
 
 const execFileAsync = promisify(execFile);
+
+// Size limits
+const MAX_S3_UPLOAD_SIZE = 500 * 1024 * 1024; // 500MB - skip S3 upload for larger files
+const CLEANUP_THRESHOLD_SIZE = 50 * 1024 * 1024; // 50MB - clean up files above this on new run
 
 // Configuration
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -29,6 +35,103 @@ const getTempDir = () => {
     mkdirSync(tempDir, { recursive: true });
   }
   return tempDir;
+};
+
+// Get available disk space in bytes
+const getAvailableDiskSpace = (): number => {
+  try {
+    // Using `df` command to get available space in the directory
+    const result = execSync(`df -b "${process.cwd()}" | tail -1`).toString().split(/\s+/);
+    return parseInt(result[3]) * 1024; // Convert blocks to bytes
+  } catch {
+    return Infinity; // If we can't determine, assume unlimited
+  }
+};
+
+// Clean up old deployment directories, keeping recent ones
+const cleanupOldDeployments = async (keepCount: number = 3) => {
+  try {
+    const tempDir = getTempDir();
+    const deployments = readdirSync(tempDir)
+      .map(dir => ({
+        name: dir,
+        path: join(tempDir, dir),
+        time: statSync(join(tempDir, dir)).mtimeMs
+      }))
+      .sort((a, b) => b.time - a.time);
+
+    // Remove all but the most recent `keepCount` deployments
+    for (let i = keepCount; i < deployments.length; i++) {
+      try {
+        rmSync(deployments[i].path, { recursive: true, force: true });
+        console.log(`Cleaned up deployment: ${deployments[i].name}`);
+      } catch (error) {
+        console.warn(`Failed to cleanup ${deployments[i].name}:`, error);
+      }
+    }
+  } catch (error) {
+    console.warn('Cleanup error:', error);
+  }
+};
+
+// Safely remove a deployment directory
+const removeDeployment = (deployDir: string) => {
+  try {
+    if (existsSync(deployDir)) {
+      rmSync(deployDir, { recursive: true, force: true });
+      console.log(`Removed deployment: ${deployDir}`);
+    }
+  } catch (error) {
+    console.warn(`Failed to remove deployment ${deployDir}:`, error);
+  }
+};
+
+// Aggressive cleanup: remove all files > 50MB from deployments directory
+// This runs at the start of each new deployment to prevent disk space issues
+const aggressiveCleanup = () => {
+  try {
+    const tempDir = getTempDir();
+    let totalCleaned = 0;
+    let filesRemoved = 0;
+
+    const cleanDirectory = (dir: string) => {
+      if (!existsSync(dir)) return;
+
+      const entries = readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          cleanDirectory(fullPath);
+          // Remove empty directories
+          try {
+            const remaining = readdirSync(fullPath);
+            if (remaining.length === 0) {
+              rmSync(fullPath, { recursive: true });
+            }
+          } catch {}
+        } else {
+          try {
+            const stats = statSync(fullPath);
+            if (stats.size > CLEANUP_THRESHOLD_SIZE) {
+              rmSync(fullPath);
+              totalCleaned += stats.size;
+              filesRemoved++;
+            }
+          } catch {}
+        }
+      }
+    };
+
+    cleanDirectory(tempDir);
+
+    if (filesRemoved > 0) {
+      console.log(`Aggressive cleanup: removed ${filesRemoved} files (${(totalCleaned / 1024 / 1024).toFixed(1)}MB)`);
+    }
+    return totalCleaned;
+  } catch (error) {
+    console.warn('Aggressive cleanup error:', error);
+    return 0;
+  }
 };
 
 // Helper to download file from S3
@@ -56,26 +159,58 @@ async function downloadFromS3(key: string, destinationPath: string): Promise<voi
   }
 }
 
-// Helper to upload file to S3
-async function uploadToS3(key: string, filePath: string): Promise<void> {
+// Helper to upload file to S3 using streaming multipart upload
+async function uploadToS3(key: string, filePath: string): Promise<boolean> {
   try {
-    const fileContent = readFileSync(filePath);
-    await s3Client.send(
-      new PutObjectCommand({
+    const stats = statSync(filePath);
+
+    // Skip S3 upload for very large files (local deployment doesn't need S3)
+    if (stats.size > MAX_S3_UPLOAD_SIZE) {
+      console.log(`Skipping S3 upload for ${key} (${(stats.size / 1024 / 1024).toFixed(1)}MB > ${MAX_S3_UPLOAD_SIZE / 1024 / 1024}MB limit)`);
+      return false; // Return false to indicate upload was skipped
+    }
+
+    // Use streaming multipart upload for efficient large file handling
+    const fileStream = createReadStream(filePath);
+    const upload = new Upload({
+      client: s3Client,
+      params: {
         Bucket: BUCKET_NAME,
         Key: key,
-        Body: fileContent
-      })
-    );
+        Body: fileStream
+      },
+      // Multipart upload config
+      queueSize: 4,
+      partSize: 10 * 1024 * 1024, // 10MB parts
+    });
+
+    await upload.done();
+    return true;
   } catch (error) {
     console.error(`Failed to upload ${key} to S3:`, error);
-    throw error;
+    // Don't throw - S3 upload failure shouldn't fail the whole deployment for local runs
+    return false;
   }
 }
 
 // Stream event helper
 function createSSEMessage(event: string, data: any): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+// Format elapsed time as human-readable string
+function formatElapsedTime(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  } else if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
+  } else {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${mins}m`;
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -89,6 +224,16 @@ export async function POST(request: NextRequest) {
 
       try {
         const { graph } = await request.json();
+
+        // Aggressive cleanup: remove large files from previous deployments
+        // This prevents disk space issues from accumulated intermediate files
+        const cleanedBytes = aggressiveCleanup();
+        if (cleanedBytes > 0) {
+          sendEvent('log', {
+            type: 'info',
+            message: `Cleaned up ${(cleanedBytes / 1024 / 1024).toFixed(1)}MB from previous deployments`
+          });
+        }
 
         // Validate graph structure
         if (!graph || !graph.nodes || !Array.isArray(graph.nodes)) {
@@ -104,6 +249,23 @@ export async function POST(request: NextRequest) {
           sendEvent('error', { message: 'No compute nodes to execute' });
           controller.close();
           return;
+        }
+
+        // Check available disk space (need at least 2GB for safety)
+        const availableSpace = getAvailableDiskSpace();
+        const minRequiredSpace = 2 * 1024 * 1024 * 1024; // 2GB
+
+        if (availableSpace < minRequiredSpace && availableSpace !== Infinity) {
+          sendEvent('warning', { message: `Low disk space: ${(availableSpace / 1024 / 1024 / 1024).toFixed(1)}GB available. Minimum 2GB required.` });
+          // Attempt cleanup to free space
+          await cleanupOldDeployments(1);
+
+          const newAvailableSpace = getAvailableDiskSpace();
+          if (newAvailableSpace < minRequiredSpace && newAvailableSpace !== Infinity) {
+            sendEvent('error', { message: `Insufficient disk space. Available: ${(newAvailableSpace / 1024 / 1024 / 1024).toFixed(1)}GB. Required: 2GB.` });
+            controller.close();
+            return;
+          }
         }
 
         const deploymentId = crypto.randomUUID();
@@ -195,6 +357,9 @@ export async function POST(request: NextRequest) {
 
         // 5. Execute scripts level by level with real-time status updates
         for (const level of computeLevels) {
+          // Track start times for elapsed time reporting
+          const nodeStartTimes = new Map<string, number>();
+
           // Set all nodes in this level to "running"
           for (const nodeId of level) {
             const node = nodeMap.get(nodeId) as any;
@@ -205,8 +370,23 @@ export async function POST(request: NextRequest) {
               node.in.includes(n.id) && n.type === 'input-file' && n.files && n.files.length > 0
             );
 
-            sendEvent('node-status', { nodeId, status: 'running' });
+            nodeStartTimes.set(nodeId, Date.now());
+            sendEvent('node-status', { nodeId, status: 'running', startTime: Date.now() });
           }
+
+          // Send periodic elapsed time updates for running nodes
+          const elapsedInterval = setInterval(() => {
+            for (const [nodeId, startTime] of nodeStartTimes) {
+              const elapsed = Math.round((Date.now() - startTime) / 1000);
+              const node = nodeMap.get(nodeId) as any;
+              sendEvent('node-elapsed', {
+                nodeId,
+                nodeName: node?.name || nodeId,
+                elapsed,
+                elapsedFormatted: formatElapsedTime(elapsed)
+              });
+            }
+          }, 5000); // Update every 5 seconds
 
           // Execute all jobs in this level
           const levelPromises = level.flatMap((nodeId) => {
@@ -294,12 +474,29 @@ export async function POST(request: NextRequest) {
           // Wait for all jobs in this level and update statuses
           try {
             const results = await Promise.all(levelPromises);
-            // Mark completed nodes
+            clearInterval(elapsedInterval); // Stop elapsed time updates
+
+            // Mark completed nodes with elapsed time
             const completedNodeIds = new Set(results.map(r => r.nodeId));
             for (const nodeId of completedNodeIds) {
-              sendEvent('node-status', { nodeId, status: 'completed' });
+              const startTime = nodeStartTimes.get(nodeId);
+              const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
+              const node = nodeMap.get(nodeId) as any;
+              sendEvent('node-status', {
+                nodeId,
+                status: 'completed',
+                elapsed,
+                elapsedFormatted: formatElapsedTime(elapsed)
+              });
+              sendEvent('log', {
+                type: 'info',
+                message: `Completed in ${formatElapsedTime(elapsed)}`,
+                nodeId,
+                nodeName: node?.name || nodeId
+              });
             }
           } catch (error) {
+            clearInterval(elapsedInterval); // Stop elapsed time updates on error too
             // Find the actual failed node from results
             let actualFailedNodeId: string | null = null;
             let actualFailedNodeName: string | null = null;
@@ -310,11 +507,18 @@ export async function POST(request: NextRequest) {
               if (result && result.status === 'failed') {
                 actualFailedNodeId = nodeId;
                 actualFailedNodeName = (nodeMap.get(nodeId) as any)?.name || nodeId;
-                sendEvent('node-status', { nodeId, status: 'failed' });
+                const startTime = nodeStartTimes.get(nodeId);
+                const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
+                sendEvent('node-status', {
+                  nodeId,
+                  status: 'failed',
+                  elapsed,
+                  elapsedFormatted: formatElapsedTime(elapsed)
+                });
                 break; // Take the first failed node
               }
             }
-            
+
             // If no specific failure found, mark all incomplete as failed
             if (!actualFailedNodeId) {
               for (const nodeId of level) {
@@ -323,7 +527,14 @@ export async function POST(request: NextRequest) {
                 if (!result || result.status !== 'completed') {
                   actualFailedNodeId = nodeId;
                   actualFailedNodeName = (nodeMap.get(nodeId) as any)?.name || nodeId;
-                  sendEvent('node-status', { nodeId, status: 'failed' });
+                  const startTime = nodeStartTimes.get(nodeId);
+                  const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
+                  sendEvent('node-status', {
+                    nodeId,
+                    status: 'failed',
+                    elapsed,
+                    elapsedFormatted: formatElapsedTime(elapsed)
+                  });
                   break;
                 }
               }
@@ -331,18 +542,21 @@ export async function POST(request: NextRequest) {
             
             const errorMsg = error instanceof Error ? error.message : 'Execution failed';
             // Send error with the actual failed nodeId so autopilot can fix it
-            sendEvent('error', { 
+            sendEvent('error', {
               message: errorMsg,
               nodeId: actualFailedNodeId,
-              nodeName: actualFailedNodeName
+              nodeName: actualFailedNodeName,
+              deploymentId
             });
+            // Don't cleanup immediately - let autopilot retry or user decide
+            // Cleanup will happen when new successful deployment completes
             controller.close();
             return;
           }
         }
 
-        // 6. Prepare output files
-        const outputNodeUpdates: Array<{ nodeId: string; csvContent: string; fileName: string }> = [];
+        // 6. Prepare output files - send as file references, not inline content
+        const outputNodeUpdates: Array<{ nodeId: string; filePath: string; fileName: string; fileSize?: number }> = [];
 
         for (const [resultKey, result] of nodeResults) {
           const fileIndex = result.fileIndex;
@@ -352,7 +566,9 @@ export async function POST(request: NextRequest) {
           const outputPath = join(deployDir, nodeId, `file-${fileIndex}`, 'output.csv');
           if (existsSync(outputPath)) {
             try {
-              const content = readFileSync(outputPath, 'utf-8');
+              // Don't read the file content - just get metadata
+              // The frontend will request the file data separately if needed
+              const stats = require('fs').statSync(outputPath);
               const outputNodes = graph.nodes.filter((n: any) =>
                 n.type === 'output-file' && n.in.includes(nodeId)
               );
@@ -360,23 +576,28 @@ export async function POST(request: NextRequest) {
               outputNodes.forEach((outputNode: any) => {
                 outputNodeUpdates.push({
                   nodeId: outputNode.id,
-                  csvContent: content,
-                  fileName: `output-${fileIndex}.csv`
+                  filePath: outputPath,
+                  fileName: `output-${fileIndex}.csv`,
+                  fileSize: stats.size
                 });
               });
             } catch (error) {
-              console.error(`Failed to read output for ${resultKey}:`, error);
+              console.error(`Failed to get metadata for ${resultKey}:`, error);
             }
           }
         }
 
-        // Send final completion event
+        // Send final completion event with file references (not content)
         sendEvent('complete', {
           deploymentId,
           status: 'completed',
           outputNodeUpdates,
           consoleLogs
         });
+
+        // Clean up old deployments after successful completion
+        // Keep only the 3 most recent deployments
+        await cleanupOldDeployments(3);
 
         controller.close();
       } catch (error) {

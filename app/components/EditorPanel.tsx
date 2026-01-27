@@ -58,6 +58,8 @@ export default function EditorPanel() {
   const [consoleHeight, setConsoleHeight] = useState(250); // Default ~1/3 of typical screen
   const [isResizing, setIsResizing] = useState(false);
   const [selectedOutputFileIndex, setSelectedOutputFileIndex] = useState(0);
+  const [fileListPanelWidth, setFileListPanelWidth] = useState(180); // Default width for file list panel
+  const [isResizingFileList, setIsResizingFileList] = useState(false);
   const [selectedInputFileIndex, setSelectedInputFileIndex] = useState(0);
   const [inputFileContent, setInputFileContent] = useState<string | null>(null);
   const [loadingInputFile, setLoadingInputFile] = useState(false);
@@ -67,6 +69,8 @@ export default function EditorPanel() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisExpanded, setAnalysisExpanded] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [outputFileContent, setOutputFileContent] = useState<string | null>(null);
+  const [loadingOutputFile, setLoadingOutputFile] = useState(false);
 
   // Autopilot state - AI automatically fixes errors (after user confirmation)
   const [isAutopilotActive, setIsAutopilotActive] = useState(false);
@@ -564,9 +568,36 @@ export default function EditorPanel() {
                     if (data.status === 'completed') {
                       completedNodes++;
                       setRunProgress((completedNodes / computeNodeIds.length) * 100);
+                      // Log completion with elapsed time if available
+                      if (data.elapsedFormatted) {
+                        addConsoleLog({
+                          type: 'success',
+                          message: `Completed in ${data.elapsedFormatted}`,
+                          nodeId: data.nodeId
+                        });
+                      }
                     } else if (data.status === 'failed') {
                       failedNodeId = data.nodeId;
+                      // Log failure with elapsed time if available
+                      if (data.elapsedFormatted) {
+                        addConsoleLog({
+                          type: 'error',
+                          message: `Failed after ${data.elapsedFormatted}`,
+                          nodeId: data.nodeId
+                        });
+                      }
                     }
+                    break;
+
+                  case 'node-elapsed':
+                    // Update elapsed time display for running nodes
+                    addConsoleLog({
+                      type: 'info',
+                      message: `Running... (${data.elapsedFormatted})`,
+                      nodeId: data.nodeId,
+                      nodeName: data.nodeName,
+                      isElapsedUpdate: true // Flag to allow replacing previous elapsed messages
+                    });
                     break;
 
                   case 'log':
@@ -596,7 +627,7 @@ export default function EditorPanel() {
 
                   case 'complete':
                     deploymentSucceeded = true;
-                    // Handle output file updates
+                    // Handle output file updates - now file references instead of inline content
                     const outputNodeUpdates = data.outputNodeUpdates || [];
                     const updatesByNode = new Map<string, typeof outputNodeUpdates>();
 
@@ -607,6 +638,7 @@ export default function EditorPanel() {
                       updatesByNode.get(update.nodeId)!.push(update);
                     }
 
+                    // Store file references for lazy loading
                     for (const [nodeId, updates] of updatesByNode) {
                       clearNodeCsvData(nodeId);
                       const outputNode = graph.nodes.find(n => n.id === nodeId);
@@ -615,22 +647,32 @@ export default function EditorPanel() {
 
                       if ((window as any).__outputFiles?.[nodeId]) {
                         delete (window as any).__outputFiles[nodeId];
-                        localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
                       }
-                      setSelectedOutputFileIndex(0);
 
-                      const csvContent = updates[0].csvContent;
-                      if (csvContent) {
-                        updateNodeCsvData(nodeId, csvContent, updates[0].fileName || 'output.csv');
+                      // Store file references (not content) for lazy loading on demand
+                      if (updates.length > 0) {
+                        (window as any).__outputFiles = (window as any).__outputFiles || {};
+                        (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
+                          fileName: u.fileName,
+                          filePath: u.filePath,
+                          fileSize: u.fileSize
+                        }));
+                        localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
 
-                        if (updates.length > 1) {
-                          (window as any).__outputFiles = (window as any).__outputFiles || {};
-                          (window as any).__outputFiles[nodeId] = updates.map((u: any) => ({
-                            fileName: u.fileName,
-                            content: u.csvContent
-                          }));
-                          localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
-                        }
+                        // Load first file on demand when selected
+                        setSelectedOutputFileIndex(0);
+                      }
+
+                      // Mark the output-file node as completed
+                      updateNodeStatus(nodeId, 'completed');
+                    }
+
+                    // Also mark any output-file nodes that weren't in the updates as completed
+                    // This handles cases where output file might not have been written but deployment succeeded
+                    const allOutputNodes = graph.nodes.filter(n => n.type === 'output-file');
+                    for (const outputNode of allOutputNodes) {
+                      if (!updatesByNode.has(outputNode.id)) {
+                        updateNodeStatus(outputNode.id, 'completed');
                       }
                     }
 
@@ -994,7 +1036,30 @@ export default function EditorPanel() {
                     if (data.status === 'completed') {
                       completedNodes++;
                       setRunProgress((completedNodes / computeNodeIds.length) * 100);
+                      if (data.elapsedFormatted) {
+                        addConsoleLog({
+                          type: 'success',
+                          message: `Completed in ${data.elapsedFormatted}`,
+                          nodeId: data.nodeId
+                        });
+                      }
+                    } else if (data.status === 'failed' && data.elapsedFormatted) {
+                      addConsoleLog({
+                        type: 'error',
+                        message: `Failed after ${data.elapsedFormatted}`,
+                        nodeId: data.nodeId
+                      });
                     }
+                    break;
+
+                  case 'node-elapsed':
+                    addConsoleLog({
+                      type: 'info',
+                      message: `Running... (${data.elapsedFormatted})`,
+                      nodeId: data.nodeId,
+                      nodeName: data.nodeName,
+                      isElapsedUpdate: true
+                    });
                     break;
 
                   case 'log':
@@ -1056,6 +1121,18 @@ export default function EditorPanel() {
                           }));
                           localStorage.setItem('outputFiles', JSON.stringify((window as any).__outputFiles));
                         }
+                      }
+
+                      // Mark the output-file node as completed
+                      updateNodeStatus(nodeId, 'completed');
+                    }
+
+                    // Also mark any output-file nodes that weren't in the updates as completed
+                    // This handles cases where output file might not have been written but deployment succeeded
+                    const allOutputNodes = graph.nodes.filter(n => n.type === 'output-file');
+                    for (const outputNode of allOutputNodes) {
+                      if (!updatesByNode.has(outputNode.id)) {
+                        updateNodeStatus(outputNode.id, 'completed');
                       }
                     }
 
@@ -1545,6 +1622,43 @@ export default function EditorPanel() {
     }
   }, [isResizing, handleConsoleResize, handleConsoleResizeEnd]);
 
+  // File list panel resize handlers
+  const handleFileListResize = useCallback((e: MouseEvent) => {
+    if (!isResizingFileList) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const multiFileViewer = document.querySelector('.multi-file-viewer');
+    if (!multiFileViewer) return;
+
+    const viewerRect = multiFileViewer.getBoundingClientRect();
+    const newWidth = e.clientX - viewerRect.left;
+    const minWidth = 120;
+    const maxWidth = 350;
+
+    setFileListPanelWidth(Math.max(minWidth, Math.min(newWidth, maxWidth)));
+  }, [isResizingFileList]);
+
+  const handleFileListResizeEnd = useCallback(() => {
+    setIsResizingFileList(false);
+  }, []);
+
+  useEffect(() => {
+    if (isResizingFileList) {
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'col-resize';
+      document.addEventListener('mousemove', handleFileListResize);
+      document.addEventListener('mouseup', handleFileListResizeEnd);
+      return () => {
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', handleFileListResize);
+        document.removeEventListener('mouseup', handleFileListResizeEnd);
+      };
+    }
+  }, [isResizingFileList, handleFileListResize, handleFileListResizeEnd]);
+
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1572,6 +1686,57 @@ export default function EditorPanel() {
       }
     }
   }, []);
+
+  // Lazy load output file content when selected
+  useEffect(() => {
+    const loadOutputFile = async () => {
+      if (!selectedNode?.id || !selectedNode.type?.includes('output')) return;
+
+      const files = (window as any).__outputFiles?.[selectedNode.id];
+      if (!files || !files[selectedOutputFileIndex]) return;
+
+      const file = files[selectedOutputFileIndex];
+
+      // If content is already loaded, don't fetch again
+      if (file.content) {
+        setOutputFileContent(file.content);
+        return;
+      }
+
+      // If no file path, can't fetch
+      if (!file.filePath) return;
+
+      setLoadingOutputFile(true);
+      try {
+        // Request first 50 rows for preview (reduces bandwidth and memory)
+        const response = await fetch('/api/output-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath: file.filePath, limit: 50 })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to load file: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        if (data.success && data.content) {
+          setOutputFileContent(data.content);
+          // Cache the content and metadata for future views
+          file.content = data.content;
+          file.totalRows = data.totalRows;
+          file.truncated = data.truncated;
+        }
+      } catch (error) {
+        console.error('Error loading output file:', error);
+        setOutputFileContent(`Error loading file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      } finally {
+        setLoadingOutputFile(false);
+      }
+    };
+
+    loadOutputFile();
+  }, [selectedNode?.id, selectedOutputFileIndex]);
 
   const getTypeIcon = (type: string) => {
     switch (type) {
@@ -1722,15 +1887,15 @@ export default function EditorPanel() {
               )}
               {selectedNode.type === 'output-file' && (
                 <div className="file-actions">
-                  {selectedNode.csvData || (selectedNode.files && selectedNode.files.length > 0) ? (
+                  {selectedNode.csvData || (selectedNode.files && selectedNode.files.length > 0) || (window as any).__outputFiles?.[selectedNode.id]?.length > 0 ? (
                     <>
-                      {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
+                      {(window as any).__outputFiles?.[selectedNode.id]?.length >= 1 ? (
                         <button
                           className="file-download-btn"
                           onClick={handleDownloadAllAsZip}
                         >
                           <Download size={14} />
-                          <span>Download All ({(window as any).__outputFiles[selectedNode.id].length} files)</span>
+                          <span>Download{(window as any).__outputFiles[selectedNode.id].length > 1 ? ` All (${(window as any).__outputFiles[selectedNode.id].length} files)` : ' CSV'}</span>
                         </button>
                       ) : selectedNode.csvData ? (
                         <button
@@ -1879,11 +2044,11 @@ export default function EditorPanel() {
                 }}
               />
             )}
-            {selectedNode.type === 'output-file' && selectedNode.csvData && (
+            {selectedNode.type === 'output-file' && (selectedNode.csvData || (window as any).__outputFiles?.[selectedNode.id]?.length > 0) && (
               <>
-                {(window as any).__outputFiles?.[selectedNode.id]?.length > 1 ? (
+                {(window as any).__outputFiles?.[selectedNode.id]?.length >= 1 ? (
                   <div className="multi-file-viewer">
-                    <div className="file-list-panel">
+                    <div className="file-list-panel" style={{ width: `${fileListPanelWidth}px` }}>
                       <div className="file-list-header">
                         <span>Output Files ({(window as any).__outputFiles[selectedNode.id].length})</span>
                       </div>
@@ -1900,31 +2065,68 @@ export default function EditorPanel() {
                         ))}
                       </div>
                     </div>
+                    <div 
+                      className="file-list-resize-handle"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setIsResizingFileList(true);
+                      }}
+                    />
                     <div className="file-viewer-panel">
-                      <CSVViewer
-                        data={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].content}
-                        fileName={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].fileName}
-                        onDownload={() => {
-                          const file = (window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex];
-                          const link = document.createElement('a');
-                          const blob = new Blob([file.content], { type: 'text/csv' });
-                          link.href = URL.createObjectURL(blob);
-                          link.download = file.fileName;
-                          document.body.appendChild(link);
-                          link.click();
-                          document.body.removeChild(link);
-                          URL.revokeObjectURL(link.href);
-                        }}
-                      />
+                      {loadingOutputFile ? (
+                        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                          <Loader2 size={20} className="loading-spinner" style={{ marginBottom: '1rem' }} />
+                          <p>Loading output file...</p>
+                        </div>
+                      ) : outputFileContent ? (
+                        <CSVViewer
+                          data={outputFileContent}
+                          fileName={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].fileName}
+                          filePath={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].filePath}
+                          totalRows={(window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex].totalRows}
+                          onDownload={() => {
+                            const file = (window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex];
+                            const link = document.createElement('a');
+                            const blob = new Blob([outputFileContent], { type: 'text/csv' });
+                            link.href = URL.createObjectURL(blob);
+                            link.download = file.fileName;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                            URL.revokeObjectURL(link.href);
+                          }}
+                          onLoadMore={async () => {
+                            const file = (window as any).__outputFiles[selectedNode.id][selectedOutputFileIndex];
+                            if (!file.filePath) return outputFileContent;
+                            const response = await fetch('/api/output-file', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ filePath: file.filePath }) // No limit = full file
+                            });
+                            const data = await response.json();
+                            if (data.success && data.content) {
+                              // Update the cached content
+                              file.content = data.content;
+                              setOutputFileContent(data.content);
+                              return data.content;
+                            }
+                            return outputFileContent;
+                          }}
+                        />
+                      ) : (
+                        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                          <p>No output data available</p>
+                        </div>
+                      )}
                     </div>
                   </div>
-                ) : (
+                ) : selectedNode.csvData ? (
                   <CSVViewer
                     data={selectedNode.csvData}
                     fileName={selectedNode.fileName || 'Output'}
                     onDownload={handleDownloadCSV}
                   />
-                )}
+                ) : null}
 
                 {/* AI Output Analysis - Full width section below CSV */}
                 {(outputAnalysis || analysisLoading) && (
@@ -1980,7 +2182,7 @@ export default function EditorPanel() {
                 <p>Fetching file content from storage</p>
               </div>
             )}
-            {selectedNode.type !== 'compute' && !selectedNode.csvData && !inputFileContent && !loadingInputFile && (
+            {selectedNode.type !== 'compute' && !selectedNode.csvData && !inputFileContent && !loadingInputFile && !(selectedNode.type === 'output-file' && (window as any).__outputFiles?.[selectedNode.id]?.length > 0) && (
               <div className="empty-state">
                 <HardDrive size={48} strokeWidth={1} />
                 <h3>{selectedNode.type === 'input-file' ? 'Input File' : 'Output File'}</h3>

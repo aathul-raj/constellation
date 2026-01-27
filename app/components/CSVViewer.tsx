@@ -1,29 +1,40 @@
 'use client';
 
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react';
-import { Download } from 'lucide-react';
+import { Download, Loader2 } from 'lucide-react';
 
 interface CSVViewerProps {
   data: string;
   fileName: string;
   onDownload: () => void;
+  filePath?: string; // Optional: for streaming full file downloads
+  totalRows?: number; // Optional: total rows in file (may differ from data if truncated)
+  onLoadMore?: () => Promise<string>; // Optional: callback to load full data
 }
 
 const ROW_HEIGHT = 32;
 const COLUMN_WIDTH = 150;
 const VISIBLE_ROWS_BUFFER = 5; // Extra rows to render above/below viewport
 const VISIBLE_COLS_BUFFER = 2; // Extra columns to render left/right of viewport
+const DEFAULT_ROW_PREVIEW_LIMIT = 50; // Default to showing first 50 rows
 
-export default function CSVViewer({ data, fileName, onDownload }: CSVViewerProps) {
+export default function CSVViewer({ data, fileName, onDownload, filePath, totalRows: externalTotalRows, onLoadMore }: CSVViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [containerHeight, setContainerHeight] = useState(400);
   const [containerWidth, setContainerWidth] = useState(800);
+  const [showAllRows, setShowAllRows] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [fullData, setFullData] = useState<string | null>(null);
+
+  // Use fullData if loaded, otherwise use the provided data
+  const activeData = fullData || data;
 
   // Parse CSV data once
   const parsedData = useMemo(() => {
-    const lines = data.trim().split('\n');
+    const lines = activeData.trim().split('\n');
     if (lines.length === 0) return [];
 
     return lines.map(line => {
@@ -46,12 +57,22 @@ export default function CSVViewer({ data, fileName, onDownload }: CSVViewerProps
       cells.push(current.trim());
       return cells;
     });
-  }, [data]);
+  }, [activeData]);
 
   const headers = parsedData[0] || [];
-  const rows = parsedData.slice(1);
+  const allRows = parsedData.slice(1);
+  const rowsInCurrentData = allRows.length;
+
+  // Use external total if provided (for truncated data), otherwise use parsed rows
+  const totalRowsInFile = externalTotalRows ?? rowsInCurrentData;
+
+  // Limit rows to preview by default (unless user clicks "Show All" or full data is loaded)
+  const rows = (showAllRows || fullData) ? allRows : allRows.slice(0, DEFAULT_ROW_PREVIEW_LIMIT);
   const totalRows = rows.length;
   const totalCols = headers.length;
+
+  // Show "Load All" button if we have more rows in file than currently displayed
+  const isPreviewLimited = !fullData && totalRowsInFile > rowsInCurrentData;
 
   // Calculate virtual dimensions
   const totalHeight = totalRows * ROW_HEIGHT;
@@ -91,28 +112,114 @@ export default function CSVViewer({ data, fileName, onDownload }: CSVViewerProps
     return () => resizeObserver.disconnect();
   }, []);
 
-  const handleSaveToComputer = useCallback(() => {
-    const link = document.createElement('a');
-    const blob = new Blob([data], { type: 'text/csv' });
-    link.href = URL.createObjectURL(blob);
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(link.href);
-  }, [data, fileName]);
+  // Download full file using streaming (if filePath available) or current data
+  const handleSaveToComputer = useCallback(async () => {
+    // If we have a file path, use the streaming download endpoint for full file
+    if (filePath) {
+      setIsDownloading(true);
+      try {
+        const response = await fetch('/api/output-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath, download: true })
+        });
+
+        if (!response.ok) {
+          throw new Error('Download failed');
+        }
+
+        // Stream the response as a download
+        const blob = await response.blob();
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+      } catch (error) {
+        console.error('Download error:', error);
+        // Fallback to current data if streaming fails
+        const blob = new Blob([activeData], { type: 'text/csv' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+      } finally {
+        setIsDownloading(false);
+      }
+    } else {
+      // No file path, download current data
+      const link = document.createElement('a');
+      const blob = new Blob([activeData], { type: 'text/csv' });
+      link.href = URL.createObjectURL(blob);
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+    }
+  }, [activeData, fileName, filePath]);
+
+  // Load all rows from the server
+  const handleLoadMore = useCallback(async () => {
+    if (onLoadMore) {
+      setIsLoadingMore(true);
+      try {
+        const content = await onLoadMore();
+        setFullData(content);
+        setShowAllRows(true);
+      } catch (error) {
+        console.error('Failed to load more rows:', error);
+      } finally {
+        setIsLoadingMore(false);
+      }
+    } else {
+      // No callback, just show all available rows
+      setShowAllRows(true);
+    }
+  }, [onLoadMore]);
 
   return (
     <div className="csv-editor-container">
       <div className="csv-header">
         <div className="csv-info">
           <h3 className="csv-filename">{fileName}</h3>
-          <span className="row-count">{totalRows.toLocaleString()} rows, {totalCols} columns</span>
+          <span className="row-count">
+            {isPreviewLimited
+              ? `${totalRows} of ${totalRowsInFile.toLocaleString()} rows (preview), ${totalCols} columns`
+              : `${totalRows.toLocaleString()} rows, ${totalCols} columns`
+            }
+          </span>
         </div>
         <div className="csv-actions">
-          <button className="csv-save-btn" onClick={handleSaveToComputer}>
-            <Download size={14} />
-            <span>Save</span>
+          {isPreviewLimited && (
+            <button
+              className="csv-load-more-btn"
+              onClick={handleLoadMore}
+              disabled={isLoadingMore}
+            >
+              {isLoadingMore ? (
+                <>
+                  <Loader2 size={12} className="animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                <>Load All {totalRowsInFile.toLocaleString()} Rows</>
+              )}
+            </button>
+          )}
+          <button
+            className="csv-save-btn"
+            onClick={handleSaveToComputer}
+            disabled={isDownloading}
+            style={{ opacity: isDownloading ? 0.7 : 1, cursor: isDownloading ? 'wait' : 'pointer' }}
+          >
+            {isDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            <span>{isDownloading ? 'Downloading...' : 'Save'}</span>
           </button>
         </div>
       </div>
