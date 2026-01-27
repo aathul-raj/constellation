@@ -1,6 +1,5 @@
 FROM node:20-slim
 
-# Install Python
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -8,24 +7,32 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy package files
 COPY package*.json ./
-
-# Install Node dependencies
 RUN npm ci
 
-# Copy Python requirements and install
 COPY requirements.txt ./
 RUN pip3 install -r requirements.txt --break-system-packages
 
-# Copy the rest of the app
 COPY . .
 
-# Build Next.js
+# Set dummy env vars for build only
+ENV NEXTAUTH_SECRET=build-time-dummy \
+    GOOGLE_CLIENT_ID=build-time-dummy \
+    GOOGLE_CLIENT_SECRET=build-time-dummy \
+    FIREBASE_PROJECT_ID=build-time-dummy \
+    FIREBASE_CLIENT_EMAIL=build-time-dummy \
+    FIREBASE_PRIVATE_KEY=build-time-dummy
+
 RUN npm run build
 
-# Expose port (Railway will set PORT env variable)
+# Real env vars will be provided by Railway at runtime
+ENV NEXTAUTH_SECRET= \
+    GOOGLE_CLIENT_ID= \
+    GOOGLE_CLIENT_SECRET= \
+    FIREBASE_PROJECT_ID= \
+    FIREBASE_CLIENT_EMAIL= \
+    FIREBASE_PRIVATE_KEY=
+
 EXPOSE 3000
 
-# Start the app
 CMD ["npm", "start"]
