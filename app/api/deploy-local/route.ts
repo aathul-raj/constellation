@@ -18,7 +18,7 @@ const CLEANUP_THRESHOLD_SIZE = 50 * 1024 * 1024; // 50MB - clean up files above 
 // Configuration
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || 'hpc-pipeline-bucket';
-const PYTHON_VERSION = process.env.PYTHON_VERSION || 'python3.11';
+const PYTHON_VERSION = process.env.PYTHON_VERSION || 'python3';
 
 const s3Client = new S3Client({
   region: REGION,
