@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+# Use npm install instead of npm ci to resolve platform-specific packages for Linux
+RUN npm install --legacy-peer-deps
 
 COPY requirements.txt ./
 RUN pip3 install -r requirements.txt --break-system-packages \
