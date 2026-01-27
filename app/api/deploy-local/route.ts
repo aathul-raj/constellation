@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
-import { execFile } from 'child_process';
-import { writeFileSync, readFileSync, mkdirSync, existsSync, statSync, readdirSync, rmSync, createReadStream } from 'fs';
+import { execFile, spawn } from 'child_process';
+import { writeFileSync, readFileSync, mkdirSync, existsSync, statSync, readdirSync, rmSync, createReadStream, unlinkSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { createExecutableScript } from '@/app/utils/code-wrapper';
@@ -213,6 +214,67 @@ function formatElapsedTime(seconds: number): string {
   }
 }
 
+// Direct Python syntax check (no HTTP request needed)
+async function checkPythonSyntax(code: string): Promise<{ valid: boolean; errors?: string[] }> {
+  const tmpFile = join(tmpdir(), `lint-${Date.now()}-${Math.random().toString(36).slice(2)}.py`);
+
+  try {
+    writeFileSync(tmpFile, code, 'utf-8');
+
+    return new Promise((resolve) => {
+      const python = spawn(PYTHON_VERSION, ['-m', 'py_compile', tmpFile]);
+
+      let errorOutput = '';
+
+      python.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+      });
+
+      python.on('close', (exitCode) => {
+        // Clean up temp file
+        try { unlinkSync(tmpFile); } catch {}
+
+        if (exitCode === 0) {
+          resolve({ valid: true });
+        } else {
+          const errors: string[] = [];
+          const lines = errorOutput.split('\n').filter(l => l.trim());
+
+          for (const line of lines) {
+            if (line.includes('SyntaxError:') || line.includes('IndentationError:') || line.includes('TabError:')) {
+              const match = line.match(/line (\d+)/i);
+              if (match) {
+                const lineNum = match[1];
+                const errorType = line.match(/(SyntaxError|IndentationError|TabError)/)?.[0] || 'Error';
+                errors.push(`Line ${lineNum}: ${errorType}`);
+              } else {
+                errors.push(line.trim());
+              }
+            }
+          }
+
+          if (errors.length === 0) {
+            errors.push('Syntax validation failed');
+          }
+
+          resolve({ valid: false, errors });
+        }
+      });
+
+      python.on('error', (err) => {
+        try { unlinkSync(tmpFile); } catch {}
+        console.warn('Python not available for linting:', err.message);
+        // If Python isn't available, skip linting and let execution catch errors
+        resolve({ valid: true });
+      });
+    });
+  } catch (error) {
+    try { unlinkSync(tmpFile); } catch {}
+    // If we can't write temp file, skip linting
+    return { valid: true };
+  }
+}
+
 export async function POST(request: NextRequest) {
   const encoder = new TextEncoder();
 
@@ -289,13 +351,8 @@ export async function POST(request: NextRequest) {
 
           try {
             const completeScript = createExecutableScript(node, graph);
-            const lintResponse = await fetch(`${request.nextUrl.origin}/api/lint`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ code: completeScript })
-            });
-
-            const lintResult = await lintResponse.json();
+            // Direct Python syntax check - no HTTP request needed
+            const lintResult = await checkPythonSyntax(completeScript);
 
             if (!lintResult.valid) {
               const errorMsg = `Syntax errors in ${node.name}: ${lintResult.errors?.join(', ') || 'Unknown error'}`;
