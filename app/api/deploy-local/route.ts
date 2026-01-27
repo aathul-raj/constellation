@@ -13,8 +13,9 @@ import { execSync } from 'child_process';
 const execFileAsync = promisify(execFile);
 
 // Size limits
-const MAX_S3_UPLOAD_SIZE = 500 * 1024 * 1024; // 500MB - skip S3 upload for larger files
-const CLEANUP_THRESHOLD_SIZE = 50 * 1024 * 1024; // 50MB - clean up files above this on new run
+const MAX_S3_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB - skip S3 upload for larger files
+const MAX_INPUT_FILE_SIZE = 50 * 1024 * 1024; // 50MB - reject files larger than this
+const MAX_OUTPUT_FILE_SIZE = 200 * 1024 * 1024; // 200MB - warn if output exceeds this
 
 // Configuration
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -87,51 +88,65 @@ const removeDeployment = (deployDir: string) => {
   }
 };
 
-// Aggressive cleanup: remove all files > 50MB from deployments directory
-// This runs at the start of each new deployment to prevent disk space issues
-const aggressiveCleanup = () => {
+// Complete wipe of tmp directory - runs at start of EVERY deployment
+// This prevents memory/disk issues from accumulated files
+const wipeTmpDirectory = () => {
   try {
     const tempDir = getTempDir();
-    let totalCleaned = 0;
-    let filesRemoved = 0;
-
-    const cleanDirectory = (dir: string) => {
-      if (!existsSync(dir)) return;
-
-      const entries = readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = join(dir, entry.name);
-        if (entry.isDirectory()) {
-          cleanDirectory(fullPath);
-          // Remove empty directories
-          try {
-            const remaining = readdirSync(fullPath);
-            if (remaining.length === 0) {
-              rmSync(fullPath, { recursive: true });
+    if (existsSync(tempDir)) {
+      // Get total size before wiping
+      let totalSize = 0;
+      const countSize = (dir: string) => {
+        try {
+          const entries = readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = join(dir, entry.name);
+            if (entry.isDirectory()) {
+              countSize(fullPath);
+            } else {
+              try {
+                totalSize += statSync(fullPath).size;
+              } catch {}
             }
-          } catch {}
-        } else {
-          try {
-            const stats = statSync(fullPath);
-            if (stats.size > CLEANUP_THRESHOLD_SIZE) {
-              rmSync(fullPath);
-              totalCleaned += stats.size;
-              filesRemoved++;
-            }
-          } catch {}
-        }
+          }
+        } catch {}
+      };
+      countSize(tempDir);
+
+      // Wipe everything
+      rmSync(tempDir, { recursive: true, force: true });
+      mkdirSync(tempDir, { recursive: true });
+
+      if (totalSize > 0) {
+        console.log(`Wiped tmp directory: freed ${(totalSize / 1024 / 1024).toFixed(1)}MB`);
       }
-    };
-
-    cleanDirectory(tempDir);
-
-    if (filesRemoved > 0) {
-      console.log(`Aggressive cleanup: removed ${filesRemoved} files (${(totalCleaned / 1024 / 1024).toFixed(1)}MB)`);
+      return totalSize;
     }
-    return totalCleaned;
-  } catch (error) {
-    console.warn('Aggressive cleanup error:', error);
     return 0;
+  } catch (error) {
+    console.warn('Wipe tmp error:', error);
+    // Ensure dir exists even if wipe failed
+    try {
+      mkdirSync(getTempDir(), { recursive: true });
+    } catch {}
+    return 0;
+  }
+};
+
+// Validate input file size before processing
+const validateInputFileSize = (filePath: string, fileName: string): { valid: boolean; error?: string; size: number } => {
+  try {
+    const stats = statSync(filePath);
+    if (stats.size > MAX_INPUT_FILE_SIZE) {
+      return {
+        valid: false,
+        error: `Input file "${fileName}" (${(stats.size / 1024 / 1024).toFixed(1)}MB) exceeds ${MAX_INPUT_FILE_SIZE / 1024 / 1024}MB limit. Please use a smaller file.`,
+        size: stats.size
+      };
+    }
+    return { valid: true, size: stats.size };
+  } catch {
+    return { valid: true, size: 0 }; // File doesn't exist yet, allow
   }
 };
 
@@ -287,13 +302,13 @@ export async function POST(request: NextRequest) {
       try {
         const { graph } = await request.json();
 
-        // Aggressive cleanup: remove large files from previous deployments
-        // This prevents disk space issues from accumulated intermediate files
-        const cleanedBytes = aggressiveCleanup();
-        if (cleanedBytes > 0) {
+        // CRITICAL: Wipe entire tmp directory on EVERY run to prevent memory issues
+        // This ensures we start fresh and don't accumulate files
+        const wipedBytes = wipeTmpDirectory();
+        if (wipedBytes > 0) {
           sendEvent('log', {
             type: 'info',
-            message: `Cleaned up ${(cleanedBytes / 1024 / 1024).toFixed(1)}MB from previous deployments`
+            message: `Cleared ${(wipedBytes / 1024 / 1024).toFixed(1)}MB from previous runs`
           });
         }
 
@@ -313,21 +328,14 @@ export async function POST(request: NextRequest) {
           return;
         }
 
-        // Check available disk space (need at least 2GB for safety)
+        // Check available disk space (need at least 500MB for safety)
         const availableSpace = getAvailableDiskSpace();
-        const minRequiredSpace = 2 * 1024 * 1024 * 1024; // 2GB
+        const minRequiredSpace = 500 * 1024 * 1024; // 500MB (reduced since we wipe tmp each run)
 
         if (availableSpace < minRequiredSpace && availableSpace !== Infinity) {
-          sendEvent('warning', { message: `Low disk space: ${(availableSpace / 1024 / 1024 / 1024).toFixed(1)}GB available. Minimum 2GB required.` });
-          // Attempt cleanup to free space
-          await cleanupOldDeployments(1);
-
-          const newAvailableSpace = getAvailableDiskSpace();
-          if (newAvailableSpace < minRequiredSpace && newAvailableSpace !== Infinity) {
-            sendEvent('error', { message: `Insufficient disk space. Available: ${(newAvailableSpace / 1024 / 1024 / 1024).toFixed(1)}GB. Required: 2GB.` });
-            controller.close();
-            return;
-          }
+          sendEvent('error', { message: `Insufficient disk space. Available: ${(availableSpace / 1024 / 1024).toFixed(0)}MB. Required: 500MB.` });
+          controller.close();
+          return;
         }
 
         const deploymentId = crypto.randomUUID();
@@ -382,8 +390,9 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // 3. Download input files from S3
+        // 3. Download input files from S3 and validate sizes
         const inputFileNodes = graph.nodes.filter((n: any) => n.type === 'input-file');
+        let totalInputSize = 0;
 
         for (const inputNode of inputFileNodes) {
           if (inputNode.files && inputNode.files.length > 0) {
@@ -394,6 +403,17 @@ export async function POST(request: NextRequest) {
               for (const file of inputNode.files) {
                 const localInputPath = join(inputDir, file.id);
                 await downloadFromS3(file.id, localInputPath);
+
+                // Validate file size after download
+                const validation = validateInputFileSize(localInputPath, file.name || file.id);
+                if (!validation.valid) {
+                  sendEvent('error', { message: validation.error });
+                  // Clean up downloaded file
+                  try { unlinkSync(localInputPath); } catch {}
+                  controller.close();
+                  return;
+                }
+                totalInputSize += validation.size;
               }
             } catch (error) {
               sendEvent('error', { message: `Failed to download input files` });
@@ -401,6 +421,13 @@ export async function POST(request: NextRequest) {
               return;
             }
           }
+        }
+
+        if (totalInputSize > 0) {
+          sendEvent('log', {
+            type: 'info',
+            message: `Input files: ${(totalInputSize / 1024 / 1024).toFixed(1)}MB total`
+          });
         }
 
         // 4. Get execution levels (topological sort)
@@ -652,9 +679,7 @@ export async function POST(request: NextRequest) {
           consoleLogs
         });
 
-        // Clean up old deployments after successful completion
-        // Keep only the 3 most recent deployments
-        await cleanupOldDeployments(3);
+        // Note: tmp is wiped at start of each run, no cleanup needed here
 
         controller.close();
       } catch (error) {

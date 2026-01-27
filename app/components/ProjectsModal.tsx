@@ -19,8 +19,19 @@ interface ProjectsModalProps {
   onClose: () => void;
 }
 
+// Create a fresh input node for new projects
+const createDefaultInputNode = () => ({
+  id: `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+  name: 'Input Data',
+  type: 'input-file' as const,
+  status: 'queued' as const,
+  code: '',
+  in: [] as string[],
+  out: [] as string[]
+});
+
 export default function ProjectsModal({ onClose }: ProjectsModalProps) {
-  const { setGraph, setChatMessages, addNotification, currentProjectId, setCurrentProject } = useHPCStore();
+  const { setGraph, setChatMessages, clearConsoleLogs, resetAllStatuses, addNotification, currentProjectId, setCurrentProject } = useHPCStore();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -60,12 +71,18 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
 
     setCreating(true);
     try {
+      // Create a fresh graph with a new input node (fresh ID)
+      const freshGraph = {
+        ...initialGraph,
+        nodes: [createDefaultInputNode()]
+      };
+
       const response = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newProjectName.trim(),
-          graph: initialGraph,
+          graph: freshGraph,
           chatMessages: [],
         }),
       });
@@ -73,9 +90,16 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
       const data = await response.json();
 
       if (response.ok) {
-        // Load the new project
-        setGraph(initialGraph);
-        setChatMessages([]);
+        // Load the new project with fresh state
+        setGraph(freshGraph);
+        setChatMessages([{
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: 'Constellation ready. Upload a file to the Input Data node, then describe what you want to do with it.',
+          timestamp: new Date()
+        }]);
+        clearConsoleLogs(); // Clear execution timeline
+        resetAllStatuses(); // Reset all node statuses
         setCurrentProject(data.id, newProjectName.trim());
 
         addNotification({
@@ -106,8 +130,8 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
     setGraph(project.graph);
     setCurrentProject(project.id, project.name);
 
-    // Load chat messages if they exist, otherwise clear them
-    if (project.chatMessages) {
+    // Load chat messages if they exist, otherwise set welcome message
+    if (project.chatMessages && project.chatMessages.length > 0) {
       // Convert timestamp strings back to Date objects
       const messagesWithDates = project.chatMessages.map((msg: any) => ({
         ...msg,
@@ -115,8 +139,17 @@ export default function ProjectsModal({ onClose }: ProjectsModalProps) {
       }));
       setChatMessages(messagesWithDates);
     } else {
-      setChatMessages([]);
+      setChatMessages([{
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Constellation ready. Select a node to view its job script, modify the graph, or click "Run" to execute the pipeline.',
+        timestamp: new Date()
+      }]);
     }
+
+    // Clear execution timeline when switching projects
+    clearConsoleLogs();
+    resetAllStatuses();
 
     addNotification({
       type: 'success',

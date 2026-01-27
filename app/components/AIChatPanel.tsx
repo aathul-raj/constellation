@@ -182,20 +182,18 @@ export default function AIChatPanel() {
   }, [isResizingInput, handleInputResize, handleInputResizeEnd]);
 
   const streamText = useCallback((text: string, callback: () => void) => {
-    console.log('[streamText] Text to display:', text);
     setIsStreaming(true);
     setStreamingMessage('');
 
-    const words = text.split(' ');
     let currentIndex = 0;
+    const chunkSize = 3; // Characters per tick for smoother appearance
 
-    const typeNextWord = () => {
-      if (currentIndex < words.length) {
-        setStreamingMessage(prev => {
-          const newText = prev + (prev.length > 0 ? ' ' : '') + words[currentIndex];
-          return newText;
-        });
-        currentIndex++;
+    const typeNextChunk = () => {
+      if (currentIndex < text.length) {
+        // Add multiple characters at once for smoother streaming
+        const endIndex = Math.min(currentIndex + chunkSize, text.length);
+        setStreamingMessage(text.substring(0, endIndex));
+        currentIndex = endIndex;
       } else {
         if (streamingIntervalRef.current) {
           clearInterval(streamingIntervalRef.current);
@@ -207,10 +205,8 @@ export default function AIChatPanel() {
       }
     };
 
-    // Type at ~150 words per minute (400ms per word average, randomized)
-    streamingIntervalRef.current = setInterval(() => {
-      typeNextWord();
-    }, 80 + Math.random() * 40);
+    // Stream at ~200 characters per second (5ms per character chunk)
+    streamingIntervalRef.current = setInterval(typeNextChunk, 8);
 
     return () => {
       if (streamingIntervalRef.current) {

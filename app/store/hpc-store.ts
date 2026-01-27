@@ -116,10 +116,21 @@ interface HPCStore {
   setSaveStatus: (status: 'idle' | 'saving' | 'saved' | 'error') => void;
 }
 
+// Default input node for new projects
+const createDefaultInputNode = (): HPCNode => ({
+  id: `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+  name: 'Input Data',
+  type: 'input-file',
+  status: 'queued',
+  code: '',
+  in: [],
+  out: []
+});
+
 export const initialGraph: HPCGraph = {
   name: "Data Processing Pipeline",
   description: "Simple data processing workflow with input file, compute task, and output file",
-  nodes: []
+  nodes: [createDefaultInputNode()]
 };
 
 export const useHPCStore = create<HPCStore>()(
