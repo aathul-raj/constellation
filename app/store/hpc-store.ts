@@ -157,14 +157,22 @@ export const useHPCStore = create<HPCStore>()(
     }
   })),
 
-  updateNodeCode: (nodeId, code) => set((state) => ({
-    graph: {
-      ...state.graph,
-      nodes: state.graph.nodes.map((node) =>
-        node.id === nodeId ? { ...node, code } : node
-      )
-    }
-  })),
+  updateNodeCode: (nodeId, code) => set((state) => {
+    // Normalize whitespace: convert tabs to 4 spaces, remove trailing whitespace
+    const normalizedCode = code
+      .split('\n')
+      .map(line => line.replace(/\t/g, '    ').trimEnd())
+      .join('\n');
+    
+    return {
+      graph: {
+        ...state.graph,
+        nodes: state.graph.nodes.map((node) =>
+          node.id === nodeId ? { ...node, code: normalizedCode } : node
+        )
+      }
+    };
+  }),
 
   updateNodeStatus: (nodeId, status) => set((state) => ({
     graph: {

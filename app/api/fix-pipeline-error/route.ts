@@ -1,240 +1,273 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
-import { toParamName, buildFunctionSignature, validatePythonCode } from "@/app/utils/code-validator";
+import { toParamName, buildFunctionSignature, validatePythonCode, fixGeneratedCodeAdvanced } from "@/app/utils/code-validator";
+import { translateLineNumber } from "@/app/utils/code-wrapper";
+
+/**
+ * Normalize whitespace in Python code:
+ * - Convert all tabs to 4 spaces
+ * - Remove trailing whitespace
+ * - Ensure consistent line endings
+ * - Fix mixed indentation
+ */
+function normalizeWhitespace(code: string): string {
+  return code
+    .split('\n')
+    .map(line => {
+      // Replace all tabs with 4 spaces
+      let normalized = line.replace(/\t/g, '    ');
+      // Remove trailing whitespace
+      normalized = normalized.trimEnd();
+      return normalized;
+    })
+    .join('\n');
+}
+
+/**
+ * Sanitize error messages and translate line numbers from wrapped script to user code
+ */
+function sanitizeAndTranslateError(errorMessage: string): { 
+  cleanMessage: string; 
+  userLineNumber: number | null;
+  errorType: string | null;
+} {
+  let cleanMessage = errorMessage;
+  let userLineNumber: number | null = null;
+  let errorType: string | null = null;
+
+  // Extract line number and error type
+  const lineMatch = errorMessage.match(/[Ll]ine\s+(\d+)/);
+  const errorTypeMatch = errorMessage.match(/(IndentationError|SyntaxError|TabError|NameError|TypeError|ValueError|KeyError|AttributeError)/i);
+  
+  if (lineMatch) {
+    const wrappedLineNum = parseInt(lineMatch[1], 10);
+    userLineNumber = translateLineNumber(wrappedLineNum);
+    
+    // Replace the wrapped line number with user code line number in the message
+    if (userLineNumber !== null) {
+      cleanMessage = cleanMessage.replace(/[Ll]ine\s+\d+/, `Line ${userLineNumber}`);
+    }
+  }
+  
+  if (errorTypeMatch) {
+    errorType = errorTypeMatch[1];
+  }
+
+  // Remove S3/AWS paths
+  cleanMessage = cleanMessage.replace(/s3:\/\/[^\s"']+/gi, '<file>');
+  cleanMessage = cleanMessage.replace(/\/tmp\/[a-f0-9-]+\/[^\s"']+/gi, '<file>');
+  cleanMessage = cleanMessage.replace(/\/var\/task\/[^\s"']+/gi, '<file>');
+  cleanMessage = cleanMessage.replace(/File "\/var\/[^"]+"/g, 'File "<script>"');
+  cleanMessage = cleanMessage.replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, '<id>');
+
+  return { cleanMessage, userLineNumber, errorType };
+}
 
 export async function POST(request: NextRequest) {
   try {
     if (!process.env.GEMINI_API_KEY) {
-      return NextResponse.json(
-        { error: "API key not configured" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "API key not configured" }, { status: 500 });
     }
 
-    const { graph, failedNodeId, errorMessage, consoleLogs, userGoal } = await request.json();
+    const { graph, failedNodeId, errorMessage } = await request.json();
 
     if (!graph || !failedNodeId || !errorMessage) {
-      return NextResponse.json(
-        { error: "Missing required parameters" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
     }
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const failedNode = graph.nodes.find((n: any) => n.id === failedNodeId);
     if (!failedNode) {
-      return NextResponse.json(
-        { error: "Failed node not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Failed node not found" }, { status: 404 });
     }
 
-    // CRITICAL: Build LOCAL context from the graph, not from AWS/S3 paths
-    // Get upstream nodes to understand data flow - use LOCAL node names
+    // Sanitize and translate the error message
+    const { cleanMessage, userLineNumber, errorType } = sanitizeAndTranslateError(errorMessage);
+
+    // Build context from the graph
     const upstreamNodes = graph.nodes.filter((n: any) => failedNode.in?.includes(n.id));
-    
-    // Build the CORRECT function signature based on LOCAL parent node names
     const parentNodeNames = upstreamNodes.map((n: any) => n.name);
     const expectedParams = parentNodeNames.map((name: string) => toParamName(name));
     const correctSignature = buildFunctionSignature(parentNodeNames);
     
-    // Build upstream context with LOCAL names only (no S3 paths)
+    // Get user's code - normalize it first to see what we're working with
+    const rawUserCode = failedNode.code || '';
+    const userCode = normalizeWhitespace(rawUserCode);
+    
+    // Log for debugging
+    console.log('[Autopilot] Original code length:', rawUserCode.length);
+    console.log('[Autopilot] Normalized code length:', userCode.length);
+    console.log('[Autopilot] Code differs after normalization:', rawUserCode !== userCode);
+    
+    const codeLines = userCode.split('\n');
+    
+    // Build context around the problematic line
+    let problemLineContext = '';
+    if (userLineNumber !== null && userLineNumber > 0 && userLineNumber <= codeLines.length) {
+      const startLine = Math.max(0, userLineNumber - 3);
+      const endLine = Math.min(codeLines.length, userLineNumber + 2);
+      const contextLines = codeLines.slice(startLine, endLine).map((line: string, idx: number) => {
+        const actualLineNum = startLine + idx + 1;
+        const marker = actualLineNum === userLineNumber ? ' >>> ' : '     ';
+        return `${marker}${actualLineNum}: ${line}`;
+      });
+      problemLineContext = `\n**ERROR IS ON LINE ${userLineNumber}:**\n\`\`\`\n${contextLines.join('\n')}\n\`\`\`\n`;
+    }
+
+    // Build simple upstream context
     const upstreamContext = upstreamNodes.map((n: any) => {
       const paramName = toParamName(n.name);
-      if (n.type === 'input-file') {
-        const meta = n.files?.[0]?.metadata || n.fileMetadata;
-        if (meta) {
-          return `Input "${n.name}" (param: ${paramName}): columns=[${meta.columns?.join(', ') || 'unknown'}], ${meta.rowCount || '?'} rows`;
-        }
-        return `Input "${n.name}" (param: ${paramName}): file uploaded`;
-      } else if (n.type === 'compute') {
-        // Show the LOCAL code, not S3 references
-        const codePreview = n.code?.split('\n').slice(0, 8).join('\n').substring(0, 300);
-        return `Compute "${n.name}" (param: ${paramName}):\n${codePreview}`;
+      const meta = n.files?.[0]?.metadata || n.fileMetadata;
+      if (meta?.columns) {
+        return `- "${n.name}" → param: \`${paramName}\` (columns: ${meta.columns.slice(0, 5).join(', ')}${meta.columns.length > 5 ? '...' : ''})`;
       }
-      return `${n.type} "${n.name}" (param: ${paramName})`;
-    }).join('\n\n');
+      return `- "${n.name}" → param: \`${paramName}\``;
+    }).join('\n');
 
-    // Get downstream nodes for return context
-    const downstreamNodes = graph.nodes.filter((n: any) => failedNode.out?.includes(n.id));
-    const downstreamContext = downstreamNodes.length > 0
-      ? `Downstream nodes expecting output: ${downstreamNodes.map((n: any) => n.name).join(', ')}`
-      : 'This is a terminal node (no downstream connections)';
+    // Determine error type and build appropriate prompt
+    const isIndentationError = errorType === 'IndentationError' || errorType === 'TabError';
+    const isSyntaxError = errorType === 'SyntaxError' || isIndentationError;
 
-    // Format console logs - filter for LOCAL context only
-    const relevantLogs = (consoleLogs || [])
-      .filter((log: any) => log.nodeId === failedNodeId || log.type === 'error')
-      .slice(-10)
-      .map((log: any) => `[${log.type}] ${log.message}`)
-      .join('\n');
+    let prompt: string;
+    
+    if (isIndentationError) {
+      prompt = `Fix the INDENTATION ERROR in this Python code.
 
-    // Validate current code to identify specific issues
-    const currentCodeValidation = validatePythonCode(failedNode.code || '', {
-      nodeName: failedNode.name,
-      parentNodeNames,
-      expectedParams
-    });
+**ERROR:** ${cleanMessage}
+${problemLineContext}
 
-    const validationContext = currentCodeValidation.errors.length > 0 || currentCodeValidation.warnings.length > 0
-      ? `\nCODE VALIDATION ISSUES DETECTED:
-${currentCodeValidation.errors.map(e => `- ERROR: ${e}`).join('\n')}
-${currentCodeValidation.warnings.map(w => `- WARNING: ${w}`).join('\n')}`
-      : '';
-
-    const prompt = `You are a Python debugging expert fixing a LOCAL data pipeline node. 
-
-CRITICAL CONTEXT - USE ONLY LOCAL NAMES:
-- Do NOT use S3 paths, bucket names, or AWS references
-- The function receives pandas DataFrames from upstream nodes
-- Parameter names are derived from LOCAL parent node names (snake_case)
-
-PIPELINE: ${graph.name}
-${graph.description ? `Description: ${graph.description}` : ''}
-${userGoal ? `User's Goal: ${userGoal}` : ''}
-
-FAILED NODE: "${failedNode.name}" (type: ${failedNode.type})
-
-**REQUIRED FUNCTION SIGNATURE (MUST USE EXACTLY):**
-${correctSignature}
-
-UPSTREAM DATA SOURCES (LOCAL):
-${upstreamContext || 'No upstream nodes - this node generates data'}
-
-${downstreamContext}
-
-CURRENT CODE:
+**CODE:**
 \`\`\`python
-${failedNode.code}
+${userCode}
 \`\`\`
 
-ERROR MESSAGE:
-${errorMessage}
-${validationContext}
+**RULES:**
+1. ONLY fix indentation - do NOT change logic or variable names
+2. Use exactly 4 spaces per indent level (NO tabs)
+3. Keep signature: ${correctSignature}
 
-CONSOLE LOGS:
-${relevantLogs || 'No logs available'}
+Return ONLY the fixed code. No explanations.`;
 
-STRICT REQUIREMENTS:
-1. Function MUST be named "task"
-2. Function signature MUST be EXACTLY: ${correctSignature}
-3. Parameter names are: ${expectedParams.length > 0 ? expectedParams.join(', ') : '(none)'}
-4. Use ONLY these parameter names in your code - do NOT use 'in_df', 'input_df', or 'input_data'
-5. Function MUST return a pandas DataFrame
-6. Initialize output with: out_df = ${expectedParams[0] || 'pd.DataFrame()'}.copy()
-7. Handle edge cases: empty DataFrames, missing columns, type mismatches
-8. Keep fix minimal - only change what's necessary
+    } else if (isSyntaxError) {
+      prompt = `Fix the SYNTAX ERROR in this Python code.
 
-EXAMPLE for a node with parent "Sales Data":
+**ERROR:** ${cleanMessage}
+${problemLineContext}
+
+**CODE:**
 \`\`\`python
-def task(sales_data):
-    import pandas as pd
-    import numpy as np
-    
-    out_df = sales_data.copy()
-    
-    # Your transformation here
-    
-    return out_df
+${userCode}
 \`\`\`
 
-Respond with ONLY a JSON object (no markdown):
-{
-  "analysis": "Brief explanation of what went wrong",
-  "fix_description": "What you changed to fix it",
-  "fixed_code": "The complete fixed Python function - MUST use signature: ${correctSignature}"
-}`;
+**RULES:**
+1. ONLY fix the syntax error - do NOT rewrite logic
+2. Keep signature: ${correctSignature}
+3. Use 4 spaces for indentation
 
+Return ONLY the fixed code. No explanations.`;
+
+    } else {
+      prompt = `Fix this Python error. Make MINIMAL changes only.
+
+**ERROR:** ${cleanMessage}
+${problemLineContext}
+
+**SIGNATURE:** ${correctSignature}
+**PARAMETERS:** ${upstreamContext || '(none)'}
+
+**CODE:**
+\`\`\`python
+${userCode}
+\`\`\`
+
+**RULES:**
+1. Make the SMALLEST fix possible
+2. Do NOT rewrite the function
+3. Keep signature: ${correctSignature}
+4. Use only these params: ${expectedParams.join(', ') || '(none)'}
+
+Return ONLY the fixed code. No explanations.`;
+    }
+
+    console.log('[Autopilot] Sending prompt for', errorType || 'runtime error');
     const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
-
-    // Parse the JSON response
-    let parsed;
-    try {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error("No JSON found in response");
+    let responseText = result.response.text();
+    
+    // Extract code from response
+    let fixedCode = responseText
+      .replace(/```python\n?/gi, '')
+      .replace(/```\n?/g, '')
+      .trim();
+    
+    // CRITICAL: Normalize whitespace to fix invisible indentation issues
+    // Convert tabs to 4 spaces and ensure consistent indentation
+    fixedCode = normalizeWhitespace(fixedCode);
+    
+    // Find the def task line and keep only from there
+    const defTaskMatch = fixedCode.match(/def\s+task\s*\([^)]*\)\s*:/);
+    if (defTaskMatch) {
+      const defTaskIndex = fixedCode.indexOf(defTaskMatch[0]);
+      if (defTaskIndex > 0) {
+        fixedCode = fixedCode.substring(defTaskIndex);
       }
-    } catch (parseError) {
-      console.error("Failed to parse AI response:", responseText);
-      return NextResponse.json(
-        { error: "Failed to parse AI fix response", details: responseText },
-        { status: 500 }
-      );
     }
 
-    if (!parsed.fixed_code || !parsed.analysis) {
-      return NextResponse.json(
-        { error: "AI response missing required fields", details: parsed },
-        { status: 500 }
-      );
-    }
-
-    // CRITICAL: Validate and fix the AI's generated code before returning
-    const fixedCodeValidation = validatePythonCode(parsed.fixed_code, {
-      nodeName: failedNode.name,
+    // Apply post-processing fixes
+    fixedCode = fixGeneratedCodeAdvanced(fixedCode, {
+      expectedParams,
       parentNodeNames,
-      expectedParams
+      nodeName: failedNode.name
     });
 
-    let finalCode = parsed.fixed_code;
-    
-    // Apply auto-fixes if the AI still made mistakes
-    if (fixedCodeValidation.fixedCode) {
-      console.log('[Autopilot] Applied auto-fixes to AI response:', fixedCodeValidation.warnings);
-      finalCode = fixedCodeValidation.fixedCode;
+    // Validate the result
+    const validation = validatePythonCode(fixedCode, {
+      expectedParams,
+      parentNodeNames,
+      nodeName: failedNode.name
+    });
+
+    if (validation.fixedCode) {
+      fixedCode = validation.fixedCode;
+    }
+
+    // Force correct signature
+    const sigMatch = fixedCode.match(/def\s+\w+\s*\([^)]*\)\s*:/);
+    if (sigMatch && sigMatch[0] !== correctSignature) {
+      console.log('[Autopilot] Forcing correct signature');
+      fixedCode = fixedCode.replace(/def\s+\w+\s*\([^)]*\)\s*:/, correctSignature);
+    }
+
+    // Replace common wrong variable names
+    if (expectedParams.length > 0) {
+      const wrongVars = ['in_df', 'input_df', 'input_data'];
+      for (const wrongVar of wrongVars) {
+        const regex = new RegExp(`\\b${wrongVar}\\b`, 'g');
+        if (regex.test(fixedCode) && !fixedCode.includes(`${wrongVar} =`)) {
+          fixedCode = fixedCode.replace(regex, expectedParams[0]);
+        }
+      }
     }
 
     // Final validation
-    if (!fixedCodeValidation.valid && fixedCodeValidation.errors.length > 0) {
-      console.warn('[Autopilot] Code still has issues after fix:', fixedCodeValidation.errors);
-      // Try one more time with stricter prompt
-      const retryPrompt = `The previous fix still has errors: ${fixedCodeValidation.errors.join(', ')}
-
-Fix these SPECIFIC issues. The function MUST:
-1. Be named "task"
-2. Have signature: ${correctSignature}
-3. Use parameter names: ${expectedParams.join(', ')}
-4. Return a DataFrame
-
-Current broken code:
-${parsed.fixed_code}
-
-Return ONLY the fixed Python code (no JSON, no explanation):`;
-
-      try {
-        const retryResult = await model.generateContent(retryPrompt);
-        const retryCode = retryResult.response.text()
-          .replace(/```python\n?/g, '')
-          .replace(/```\n?/g, '')
-          .trim();
-        
-        const retryValidation = validatePythonCode(retryCode, {
-          nodeName: failedNode.name,
-          parentNodeNames,
-          expectedParams
-        });
-        
-        if (retryValidation.valid || (retryValidation.errors.length < fixedCodeValidation.errors.length)) {
-          finalCode = retryValidation.fixedCode || retryCode;
-        }
-      } catch (retryError) {
-        console.warn('[Autopilot] Retry failed:', retryError);
-      }
-    }
+    const finalValidation = validatePythonCode(fixedCode, {
+      expectedParams,
+      parentNodeNames,
+      nodeName: failedNode.name
+    });
 
     return NextResponse.json({
+      success: true,
       nodeId: failedNodeId,
       nodeName: failedNode.name,
-      analysis: parsed.analysis,
-      fixDescription: parsed.fix_description || parsed.analysis,
-      fixedCode: finalCode,
+      analysis: `Fixed ${errorType || 'error'}${userLineNumber ? ` on line ${userLineNumber}` : ''}`,
+      fixDescription: `Applied minimal fix for: ${cleanMessage}`,
+      fixedCode: finalValidation.fixedCode || fixedCode,
       originalCode: failedNode.code,
       expectedSignature: correctSignature,
-      validationWarnings: fixedCodeValidation.warnings
+      validationWarnings: finalValidation.warnings,
+      validationErrors: finalValidation.errors
     });
 
   } catch (error) {

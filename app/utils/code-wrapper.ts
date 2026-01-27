@@ -8,6 +8,43 @@ function sanitizeNodeId(nodeId: string): string {
 }
 
 /**
+ * Get the line offset where user code starts in the wrapped script.
+ * This is needed to translate linter error line numbers back to user code.
+ */
+export function getCodeLineOffset(): number {
+  // Count lines in the boilerplate before ${node.code}
+  // The boilerplate is: shebang, docstring, imports, BUCKET_NAME, OUTPUT_PATH, 
+  // boto3 try/except, read_csv_smart function, and a blank line
+  return 56; // Lines 1-56 are boilerplate, user code starts at line 57
+}
+
+/**
+ * Translate a line number from the wrapped script to the user's code.
+ * Returns null if the line is in the boilerplate (not user code).
+ */
+export function translateLineNumber(wrappedLineNum: number): number | null {
+  const offset = getCodeLineOffset();
+  if (wrappedLineNum <= offset) {
+    return null; // Error is in boilerplate, not user code
+  }
+  return wrappedLineNum - offset;
+}
+
+/**
+ * Normalize Python code whitespace:
+ * - Convert tabs to 4 spaces
+ * - Remove trailing whitespace from each line
+ * - Preserve indentation structure
+ */
+function normalizeCodeWhitespace(code: string): string {
+  if (!code) return '';
+  return code
+    .split('\n')
+    .map(line => line.replace(/\t/g, '    ').trimEnd())
+    .join('\n');
+}
+
+/**
  * Create a complete executable Python script from a compute node
  *
  * Generates a universal script that:
@@ -70,7 +107,7 @@ def read_csv_smart(path):
 
     raise Exception(f"Could not read {path} - file not found locally and S3 not available")
 
-${node.code}
+${normalizeCodeWhitespace(node.code)}
 
 if __name__ == "__main__":
     try:

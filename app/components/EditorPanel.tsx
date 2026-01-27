@@ -144,13 +144,12 @@ export default function EditorPanel() {
     ]);
   };
 
-  // Pre-deployment lint check
+  // Pre-deployment lint check - validates Python syntax before running
+  // IMPORTANT: Gets fresh graph from store to avoid stale state after autopilot fixes
   const lintComputeNodes = useCallback(async () => {
-    // Linting disabled - return empty array to skip lint checks
-    return [] as Array<{ nodeName: string; errors: string[] }>;
-    
-    /* Original linting code disabled:
-    const computeNodes = graph.nodes.filter(n => n.type === 'compute');
+    // Get fresh graph directly from store - the closure's `graph` may be stale after updateNodeCode
+    const freshGraph = useHPCStore.getState().graph;
+    const computeNodes = freshGraph.nodes.filter(n => n.type === 'compute');
     const errors: Array<{ nodeName: string; errors: string[] }> = [];
 
     for (const node of computeNodes) {
@@ -161,7 +160,7 @@ export default function EditorPanel() {
       try {
         // Import createExecutableScript dynamically
         const { createExecutableScript } = await import('../utils/code-wrapper');
-        const completeScript = createExecutableScript(node, graph);
+        const completeScript = createExecutableScript(node, freshGraph);
 
         const lintResponse = await withTimeout(
           fetch('/api/lint', {
@@ -203,7 +202,6 @@ export default function EditorPanel() {
     }
 
     return errors;
-    */
   }, [graph, updateNodeStatus, addConsoleLog]);
 
   // Function to fix a failed node using AI
@@ -339,8 +337,23 @@ export default function EditorPanel() {
 
           if (fixResult.success && fixResult.fixedCode) {
             console.log('[Autopilot] Applying lint fix to node:', failedNode.id);
+            console.log('[Autopilot] Fixed code (first 150 chars):', fixResult.fixedCode.substring(0, 150));
             updateNodeCode(failedNode.id, fixResult.fixedCode);
-            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            // Wait for store to update
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            // Verify the fix was stored - this is critical for debugging
+            const verifyGraph = useHPCStore.getState().graph;
+            const verifyNode = verifyGraph.nodes.find(n => n.id === failedNode.id);
+            // Note: store normalizes code (tabs→spaces), so compare normalized versions
+            const normalizeCode = (c: string) => c.split('\n').map(l => l.replace(/\t/g, '    ').trimEnd()).join('\n');
+            const codeMatches = verifyNode?.code === normalizeCode(fixResult.fixedCode);
+            console.log('[Autopilot] Code stored correctly:', codeMatches);
+            if (!codeMatches) {
+              console.warn('[Autopilot] CODE MISMATCH! Expected:', normalizeCode(fixResult.fixedCode).substring(0, 100));
+              console.warn('[Autopilot] CODE MISMATCH! Got:', verifyNode?.code?.substring(0, 100));
+            }
 
             addChatMessage({
               role: 'assistant',
@@ -348,7 +361,7 @@ export default function EditorPanel() {
             });
 
             setCurrentFixingNode(null);
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 300));
 
             // Retry with autopilot to check for more lint errors or run deployment
             await runWithAutopilot(endpoint, title, true, deployType);
@@ -448,8 +461,23 @@ export default function EditorPanel() {
 
           if (fixResult.success && fixResult.fixedCode) {
             console.log('[Autopilot] Applying lint fix to node:', failedNode.id);
+            console.log('[Autopilot] Fixed code (first 150 chars):', fixResult.fixedCode.substring(0, 150));
             updateNodeCode(failedNode.id, fixResult.fixedCode);
-            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            // Wait for store to update
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            // Verify the fix was stored
+            const verifyGraph = useHPCStore.getState().graph;
+            const verifyNode = verifyGraph.nodes.find(n => n.id === failedNode.id);
+            // Note: store normalizes code (tabs→spaces), so compare normalized versions
+            const normalizeCode = (c: string) => c.split('\n').map(l => l.replace(/\t/g, '    ').trimEnd()).join('\n');
+            const codeMatches = verifyNode?.code === normalizeCode(fixResult.fixedCode);
+            console.log('[Autopilot] Code stored correctly:', codeMatches);
+            if (!codeMatches) {
+              console.warn('[Autopilot] CODE MISMATCH! Expected:', normalizeCode(fixResult.fixedCode).substring(0, 100));
+              console.warn('[Autopilot] CODE MISMATCH! Got:', verifyNode?.code?.substring(0, 100));
+            }
 
             addChatMessage({
               role: 'assistant',
@@ -457,7 +485,7 @@ export default function EditorPanel() {
             });
 
             setCurrentFixingNode(null);
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 300));
 
             // Retry to check for more lint errors or run deployment
             await runWithAutopilot(autopilotEndpointRef.current, autopilotTitleRef.current, true);
@@ -2033,7 +2061,7 @@ export default function EditorPanel() {
             title="Deploy and run on distributed cloud compute clusters"
           >
             <Play size={16} />
-            {isRunning && currentDeploymentType === 'cloud' && !isAutopilotActive ? 'Deploying...' : 'Deploy to Cloud'}
+            {isRunning && currentDeploymentType === 'cloud' && !isAutopilotActive ? 'Deploying...' : 'Deploy'}
           </button>
         </div>
       </div>
