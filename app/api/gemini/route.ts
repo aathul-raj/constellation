@@ -1,7 +1,7 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
 import { generateFunctionSignature, nodeNameToParamName } from '@/app/utils/signature-generator';
 import { validatePythonCode, fixGeneratedCodeAdvanced } from '@/app/utils/code-validator';
+import { getModel } from '@/app/lib/ai-client';
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,11 +21,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    // Use standard model for simple tasks, more capable model for complex pipeline generation
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+    // Use singleton AI clients for better resource management
+    const model = getModel("gemini-2.5-flash-lite");
     // More capable model for pipeline generation (handles complex multi-node graphs better)
-    const pipelineModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const pipelineModel = getModel("gemini-2.5-flash");
 
     const selectedNode = selectedNodeId
       ? graph?.nodes?.find((n: { id: string }) => n.id === selectedNodeId)

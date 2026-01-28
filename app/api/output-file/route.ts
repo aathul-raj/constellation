@@ -118,10 +118,12 @@ export async function POST(request: NextRequest) {
 /**
  * Read only the first N data lines from a CSV file using streaming
  * This is memory efficient for large files
+ * Supports abort signal for cleanup on client disconnect
  */
 async function readLimitedLines(
   filePath: string,
-  limit: number
+  limit: number,
+  signal?: AbortSignal
 ): Promise<{ content: string; truncated: boolean; totalRows: number }> {
   return new Promise((resolve, reject) => {
     const lines: string[] = [];
@@ -131,7 +133,23 @@ async function readLimitedLines(
     const stream = createReadStream(filePath, { encoding: 'utf-8' });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
+    // Cleanup on abort
+    const cleanup = () => {
+      rl.close();
+      stream.destroy();
+    };
+
+    signal?.addEventListener('abort', () => {
+      cleanup();
+      reject(new Error('Aborted'));
+    });
+
     rl.on('line', (line) => {
+      if (signal?.aborted) {
+        cleanup();
+        return;
+      }
+
       if (!headerRead) {
         // First line is header
         lines.push(line);
@@ -146,14 +164,19 @@ async function readLimitedLines(
     });
 
     rl.on('close', () => {
-      resolve({
-        content: lines.join('\n'),
-        truncated: totalRows > limit,
-        totalRows
-      });
+      if (!signal?.aborted) {
+        resolve({
+          content: lines.join('\n'),
+          truncated: totalRows > limit,
+          totalRows
+        });
+      }
     });
 
-    rl.on('error', reject);
+    rl.on('error', (err) => {
+      cleanup();
+      reject(err);
+    });
   });
 }
 

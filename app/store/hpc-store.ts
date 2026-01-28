@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
+// Memory safety limits - prevent unbounded growth
+const MAX_CONSOLE_LOGS = 500;
+const MAX_CHAT_MESSAGES = 200;
+const MAX_NOTIFICATIONS = 50;
+
 export type NodeStatus = 'queued' | 'running' | 'completed' | 'failed';
 
 export interface FileMetadata {
@@ -434,31 +439,39 @@ export const useHPCStore = create<HPCStore>()(
     theme: state.theme === 'dark' ? 'light' : 'dark'
   })),
 
-  addChatMessage: (message) => set((state) => ({
-    chatMessages: [
-      ...state.chatMessages,
-      {
-        ...message,
-        id: crypto.randomUUID(),
-        timestamp: new Date()
-      }
-    ]
-  })),
+  addChatMessage: (message) => set((state) => {
+    // Enforce max limit to prevent memory leaks
+    const existingMessages = state.chatMessages.slice(-MAX_CHAT_MESSAGES + 1);
+    return {
+      chatMessages: [
+        ...existingMessages,
+        {
+          ...message,
+          id: crypto.randomUUID(),
+          timestamp: new Date()
+        }
+      ]
+    };
+  }),
 
   setChatMessages: (messages) => set({
     chatMessages: messages
   }),
 
-  addNotification: (notification) => set((state) => ({
-    notifications: [
-      ...state.notifications,
-      {
-        ...notification,
-        id: crypto.randomUUID(),
-        timestamp: new Date()
-      }
-    ]
-  })),
+  addNotification: (notification) => set((state) => {
+    // Enforce max limit to prevent memory leaks
+    const existingNotifications = state.notifications.slice(-MAX_NOTIFICATIONS + 1);
+    return {
+      notifications: [
+        ...existingNotifications,
+        {
+          ...notification,
+          id: crypto.randomUUID(),
+          timestamp: new Date()
+        }
+      ]
+    };
+  }),
 
   removeNotification: (id) => set((state) => ({
     notifications: state.notifications.filter(n => n.id !== id)
@@ -471,9 +484,11 @@ export const useHPCStore = create<HPCStore>()(
       const filteredLogs = state.consoleLogs.filter(
         l => !(l.isElapsedUpdate && l.nodeId === log.nodeId)
       );
+      // Enforce max limit
+      const newLogs = filteredLogs.slice(-MAX_CONSOLE_LOGS + 1);
       return {
         consoleLogs: [
-          ...filteredLogs,
+          ...newLogs,
           {
             ...log,
             id: crypto.randomUUID(),
@@ -483,10 +498,11 @@ export const useHPCStore = create<HPCStore>()(
       };
     }
 
-    // Regular log - just append
+    // Regular log - append with limit enforcement
+    const newLogs = state.consoleLogs.slice(-MAX_CONSOLE_LOGS + 1);
     return {
       consoleLogs: [
-        ...state.consoleLogs,
+        ...newLogs,
         {
           ...log,
           id: crypto.randomUUID(),

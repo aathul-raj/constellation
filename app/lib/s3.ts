@@ -115,10 +115,31 @@ export async function getFileMetadata(fileKey: string) {
   };
 }
 
+// Maximum concurrent signed URL requests to prevent API throttling
+const MAX_CONCURRENT_URL_REQUESTS = 10;
+
+/**
+ * Process items in batches to limit concurrency
+ */
+async function processBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  processor: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(processor));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
 /**
  * List all files in S3 bucket
+ * Uses batched processing to prevent API throttling with many files
  */
-export async function listFiles(prefix?: string): Promise<FileMetadata[]> {
+export async function listFiles(prefix?: string, maxFiles: number = 100): Promise<FileMetadata[]> {
   if (!bucketName) {
     throw new Error('S3_BUCKET_NAME not configured');
   }
@@ -126,6 +147,7 @@ export async function listFiles(prefix?: string): Promise<FileMetadata[]> {
   const command = new ListObjectsV2Command({
     Bucket: bucketName,
     Prefix: prefix,
+    MaxKeys: maxFiles, // Limit results to prevent memory issues
   });
 
   const response = await s3Client.send(command);
@@ -134,8 +156,11 @@ export async function listFiles(prefix?: string): Promise<FileMetadata[]> {
     return [];
   }
 
-  return Promise.all(
-    response.Contents.map(async (obj) => {
+  // Process in batches to limit concurrent API calls
+  return processBatches(
+    response.Contents,
+    MAX_CONCURRENT_URL_REQUESTS,
+    async (obj) => {
       const getCommand = new GetObjectCommand({
         Bucket: bucketName,
         Key: obj.Key || '',
@@ -149,7 +174,7 @@ export async function listFiles(prefix?: string): Promise<FileMetadata[]> {
         lastModified: obj.LastModified,
         url,
       };
-    })
+    }
   );
 }
 

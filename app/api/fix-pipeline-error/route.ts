@@ -1,7 +1,7 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
 import { toParamName, buildFunctionSignature, validatePythonCode, fixGeneratedCodeAdvanced } from "@/app/utils/code-validator";
 import { translateLineNumber } from "@/app/utils/code-wrapper";
+import { getModel } from "@/app/lib/ai-client";
 
 /**
  * Normalize whitespace in Python code:
@@ -75,8 +75,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
     }
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // Use singleton AI client for better resource management
+    const model = getModel("gemini-2.5-flash");
 
     const failedNode = graph.nodes.find((n: any) => n.id === failedNodeId);
     if (!failedNode) {

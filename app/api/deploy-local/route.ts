@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { execFile, spawn } from 'child_process';
 import { writeFileSync, readFileSync, mkdirSync, existsSync, statSync, readdirSync, rmSync, createReadStream, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -9,13 +9,34 @@ import { createExecutableScript } from '@/app/utils/code-wrapper';
 import { getExecutionLevels } from '@/app/utils/graph-transform';
 import { promisify } from 'util';
 import { execSync } from 'child_process';
+import { canAcceptDeployment, getDeploymentStats } from '@/app/lib/concurrency';
 
 const execFileAsync = promisify(execFile);
 
 // Size limits
 const MAX_S3_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB - skip S3 upload for larger files
-const MAX_INPUT_FILE_SIZE = 50 * 1024 * 1024; // 50MB - reject files larger than this
+const MAX_INPUT_FILE_SIZE = 100 * 1024 * 1024; // 100MB - reject files larger than this
 const MAX_OUTPUT_FILE_SIZE = 200 * 1024 * 1024; // 200MB - warn if output exceeds this
+const MIN_AVAILABLE_MEMORY_MB = 256; // Minimum free memory required to start
+
+// Get available system memory in MB
+const getAvailableMemory = (): number => {
+  try {
+    const result = execSync('node -e "console.log(Math.round(require(\'os\').freemem() / 1024 / 1024))"').toString().trim();
+    return parseInt(result) || 0;
+  } catch {
+    return 1024; // Assume 1GB if we can't determine
+  }
+};
+
+// Get estimated memory requirement based on input file sizes
+const estimateMemoryRequirement = (inputSizeBytes: number): number => {
+  // Pandas DataFrames typically use 3-5x the CSV file size in memory
+  // Plus overhead for processing copies
+  const estimatedDfSize = inputSizeBytes * 4;
+  // Add 200MB base overhead for Python, pandas, numpy
+  return Math.round((estimatedDfSize / 1024 / 1024) + 200);
+};
 
 // Configuration
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -150,8 +171,11 @@ const validateInputFileSize = (filePath: string, fileName: string): { valid: boo
   }
 };
 
-// Helper to download file from S3
+// Helper to download file from S3 using streaming (memory efficient)
 async function downloadFromS3(key: string, destinationPath: string): Promise<void> {
+  const { createWriteStream } = await import('fs');
+  const { pipeline } = await import('stream/promises');
+
   try {
     const response = await s3Client.send(
       new GetObjectCommand({
@@ -160,15 +184,11 @@ async function downloadFromS3(key: string, destinationPath: string): Promise<voi
       })
     );
 
-    const chunks: Uint8Array[] = [];
     const readable = response.Body as any;
+    const writable = createWriteStream(destinationPath);
 
-    for await (const chunk of readable) {
-      chunks.push(chunk);
-    }
-
-    const buffer = Buffer.concat(chunks);
-    writeFileSync(destinationPath, buffer);
+    // Stream directly to disk - never buffer entire file in memory
+    await pipeline(readable, writable);
   } catch (error) {
     console.error(`Failed to download ${key} from S3:`, error);
     throw error;
@@ -291,13 +311,49 @@ async function checkPythonSyntax(code: string): Promise<{ valid: boolean; errors
 }
 
 export async function POST(request: NextRequest) {
+  // Check concurrent deployment limit first
+  if (!canAcceptDeployment()) {
+    const stats = getDeploymentStats();
+    return NextResponse.json(
+      {
+        error: 'Server busy',
+        message: `Too many concurrent deployments (${stats.active}/${stats.max}). Please try again in a moment.`
+      },
+      { status: 503 }
+    );
+  }
+
   const encoder = new TextEncoder();
+
+  // Track all intervals for cleanup on abort
+  const activeIntervals: NodeJS.Timeout[] = [];
+  let isAborted = false;
 
   const stream = new ReadableStream({
     async start(controller) {
       const sendEvent = (event: string, data: any) => {
-        controller.enqueue(encoder.encode(createSSEMessage(event, data)));
+        if (isAborted) return; // Don't send if aborted
+        try {
+          controller.enqueue(encoder.encode(createSSEMessage(event, data)));
+        } catch {
+          // Controller may be closed
+          isAborted = true;
+        }
       };
+
+      // Cleanup function
+      const cleanup = () => {
+        isAborted = true;
+        activeIntervals.forEach(interval => clearInterval(interval));
+        activeIntervals.length = 0;
+      };
+
+      // Handle client disconnect
+      request.signal.addEventListener('abort', () => {
+        console.log('[Deploy] Client disconnected, cleaning up...');
+        cleanup();
+        try { controller.close(); } catch {}
+      });
 
       try {
         const { graph } = await request.json();
@@ -337,6 +393,17 @@ export async function POST(request: NextRequest) {
           controller.close();
           return;
         }
+
+        // Check available memory
+        const availableMemory = getAvailableMemory();
+        if (availableMemory < MIN_AVAILABLE_MEMORY_MB) {
+          sendEvent('error', {
+            message: `Insufficient memory. Available: ${availableMemory}MB. Required: ${MIN_AVAILABLE_MEMORY_MB}MB. Please close other applications or try again later.`
+          });
+          controller.close();
+          return;
+        }
+        sendEvent('log', { type: 'info', message: `System memory: ${availableMemory}MB available` });
 
         const deploymentId = crypto.randomUUID();
         const tempDir = getTempDir();
@@ -424,10 +491,21 @@ export async function POST(request: NextRequest) {
         }
 
         if (totalInputSize > 0) {
+          const inputSizeMB = totalInputSize / 1024 / 1024;
+          const estimatedMemory = estimateMemoryRequirement(totalInputSize);
+          const currentAvailableMemory = getAvailableMemory();
+
           sendEvent('log', {
             type: 'info',
-            message: `Input files: ${(totalInputSize / 1024 / 1024).toFixed(1)}MB total`
+            message: `Input files: ${inputSizeMB.toFixed(1)}MB (estimated memory: ${estimatedMemory}MB, available: ${currentAvailableMemory}MB)`
           });
+
+          if (estimatedMemory > currentAvailableMemory) {
+            sendEvent('log', {
+              type: 'warning',
+              message: `Warning: Estimated memory (${estimatedMemory}MB) exceeds available (${currentAvailableMemory}MB). Processing may be slow or fail.`
+            });
+          }
         }
 
         // 4. Get execution levels (topological sort)
@@ -460,6 +538,10 @@ export async function POST(request: NextRequest) {
 
           // Send periodic elapsed time updates for running nodes
           const elapsedInterval = setInterval(() => {
+            if (isAborted) {
+              clearInterval(elapsedInterval);
+              return;
+            }
             for (const [nodeId, startTime] of nodeStartTimes) {
               const elapsed = Math.round((Date.now() - startTime) / 1000);
               const node = nodeMap.get(nodeId) as any;
@@ -471,6 +553,7 @@ export async function POST(request: NextRequest) {
               });
             }
           }, 5000); // Update every 5 seconds
+          activeIntervals.push(elapsedInterval); // Track for cleanup on abort
 
           // Execute all jobs in this level
           const levelPromises = level.flatMap((nodeId) => {
@@ -506,9 +589,18 @@ export async function POST(request: NextRequest) {
                   env[`INPUT_${upstream.id}`] = inputPath;
                 });
 
+                // Execute with memory optimization env vars and timeout
+                const execEnv: Record<string, string> = {
+                  ...env,
+                  // Memory optimization environment variables
+                  PYTHONMALLOC: 'malloc',  // Use system malloc for better memory release
+                  MALLOC_TRIM_THRESHOLD_: '65536',  // More aggressive memory trimming
+                  PYTHONHASHSEED: '0',  // Deterministic hash for reproducibility
+                };
                 const { stdout, stderr } = await execFileAsync(PYTHON_VERSION, [scriptPath], {
-                  env: env as NodeJS.ProcessEnv,
+                  env: execEnv as NodeJS.ProcessEnv,
                   maxBuffer: 10 * 1024 * 1024,
+                  timeout: 5 * 60 * 1000, // 5 minute timeout per node
                 });
 
                 if (stdout) {

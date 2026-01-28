@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { spawn } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 import { writeFile, unlink } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
+
+// Track active processes for cleanup
+const activeProcesses = new Set<ChildProcess>();
+
+// Cleanup stale processes periodically (every 60 seconds)
+const PROCESS_TIMEOUT_MS = 30000; // 30 second timeout per lint operation
 
 export async function POST(request: NextRequest) {
   try {
@@ -15,9 +21,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await checkPythonSyntax(code);
+    // Handle client disconnect
+    const abortController = new AbortController();
+    request.signal.addEventListener('abort', () => {
+      abortController.abort();
+    });
+
+    const result = await checkPythonSyntax(code, abortController.signal);
     return NextResponse.json(result);
   } catch (error) {
+    if (error instanceof Error && error.message === 'Aborted') {
+      return NextResponse.json({ valid: true }, { status: 499 }); // Client closed request
+    }
     console.error("Lint error:", error);
     return NextResponse.json(
       {
@@ -29,29 +44,79 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function checkPythonSyntax(code: string): Promise<{ valid: boolean; errors?: string[] }> {
+async function checkPythonSyntax(
+  code: string,
+  signal?: AbortSignal
+): Promise<{ valid: boolean; errors?: string[] }> {
   // Write code to a temporary file to avoid escaping issues
   const tmpFile = join(tmpdir(), `lint-${Date.now()}-${Math.random().toString(36).slice(2)}.py`);
+  let python: ChildProcess | null = null;
+  let timeoutId: NodeJS.Timeout | null = null;
+
+  // Cleanup function
+  const cleanup = async () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    if (python) {
+      activeProcesses.delete(python);
+      try {
+        python.kill('SIGTERM');
+      } catch {}
+      python = null;
+    }
+    try {
+      await unlink(tmpFile);
+    } catch {}
+  };
 
   try {
     await writeFile(tmpFile, code, 'utf-8');
 
-    return new Promise((resolve) => {
-      const python = spawn("python3", ["-m", "py_compile", tmpFile]);
+    return new Promise((resolve, reject) => {
+      // Check if already aborted
+      if (signal?.aborted) {
+        cleanup();
+        reject(new Error('Aborted'));
+        return;
+      }
+
+      python = spawn("python3", ["-m", "py_compile", tmpFile]);
+      activeProcesses.add(python);
 
       let errorOutput = "";
 
-      python.stderr.on("data", (data) => {
+      // Set timeout to prevent hanging
+      timeoutId = setTimeout(() => {
+        cleanup();
+        resolve({ valid: false, errors: ["Lint timeout - code may be too complex"] });
+      }, PROCESS_TIMEOUT_MS);
+
+      // Handle abort
+      signal?.addEventListener('abort', () => {
+        cleanup();
+        reject(new Error('Aborted'));
+      });
+
+      python.stderr?.on("data", (data) => {
         errorOutput += data.toString();
       });
 
       python.on("close", async (exitCode) => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        if (python) {
+          activeProcesses.delete(python);
+          python = null;
+        }
+
         // Clean up temp file
         try {
           await unlink(tmpFile);
-        } catch (e) {
-          // Ignore cleanup errors
-        }
+        } catch {}
 
         if (exitCode === 0) {
           resolve({ valid: true });
@@ -87,12 +152,7 @@ async function checkPythonSyntax(code: string): Promise<{ valid: boolean; errors
       });
 
       python.on("error", async (err) => {
-        // Clean up temp file
-        try {
-          await unlink(tmpFile);
-        } catch (e) {
-          // Ignore cleanup errors
-        }
+        await cleanup();
 
         console.warn("Python not available:", err);
 
@@ -106,13 +166,7 @@ async function checkPythonSyntax(code: string): Promise<{ valid: boolean; errors
       });
     });
   } catch (error) {
-    // Clean up temp file if it exists
-    try {
-      await unlink(tmpFile);
-    } catch (e) {
-      // Ignore cleanup errors
-    }
-
+    await cleanup();
     throw error;
   }
 }

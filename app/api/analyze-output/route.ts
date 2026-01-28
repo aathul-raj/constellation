@@ -1,6 +1,6 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
 import { getExecutionLevels } from "@/app/utils/graph-transform";
+import { getModel } from "@/app/lib/ai-client";
 
 export async function POST(request: NextRequest) {
   try {
@@ -27,8 +27,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    // Use singleton AI client for better resource management
+    const model = getModel("gemini-2.0-flash");
 
     const outputNode = graph.nodes.find((n: any) => n.id === outputNodeId);
     if (!outputNode) {
