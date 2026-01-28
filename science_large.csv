@@ -1,4 +1,4 @@
-experiment_id,batch_id,time_min,temperature_c,ph,concentration_mg_L,dissolved_oxygen_%,absorbance_600nm,growth_rate,foam_level
+experiment_id,batch_id,time_min,temperature_c,ph,concentration_mg_L,dissolved_oxygen_percent,absorbance_600nm,growth_rate,foam_level
 EXP_001,BATCH_A,0,36.98,7.35,2.52,97.79,0.045,0.0,1
 EXP_001,BATCH_A,15,37.08,7.18,2.02,100.0,0.045,0.0,2
 EXP_001,BATCH_A,30,37.03,7.33,2.26,96.22,0.045,0.034,2
