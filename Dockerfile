@@ -29,4 +29,5 @@ RUN npm run build
 
 EXPOSE 3000
 
-CMD ["npm", "start"]
+# Clear tmp directory on startup and start the app
+CMD rm -rf .tmp/deployments/* && npm start

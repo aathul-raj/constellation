@@ -89,13 +89,21 @@ except:
 BUCKET_NAME = os.environ.get('BUCKET_NAME', 'hpc-bucket')
 OUTPUT_PATH = os.environ.get('OUTPUT_PATH', '${node.id}/output.csv')
 
-# Try to import boto3 for S3 access (optional for local execution)
-try:
-    import boto3
-    s3_client = boto3.client('s3')
-    HAS_S3 = True
-except ImportError:
-    HAS_S3 = False
+# Lazy-load boto3 only when needed (saves ~100MB RAM for local execution)
+s3_client = None
+HAS_S3 = False
+
+def get_s3_client():
+    """Lazy-load boto3 and S3 client only when actually needed for S3 operations"""
+    global s3_client, HAS_S3
+    if s3_client is None and not HAS_S3:
+        try:
+            import boto3
+            s3_client = boto3.client('s3')
+            HAS_S3 = True
+        except ImportError:
+            HAS_S3 = False
+    return s3_client
 
 def optimize_dtypes(df):
     """Optimize DataFrame memory usage by downcasting numeric types."""
@@ -154,17 +162,19 @@ def read_csv_smart(path, optimize_memory=True):
         raise Exception(f"Could not read {path} - file not found locally")
 
     # Try S3 only if BUCKET_NAME looks like a real bucket (not a filesystem path)
-    if HAS_S3 and not os.path.isabs(BUCKET_NAME):
-        try:
-            print(f"Reading from S3: s3://{BUCKET_NAME}/{path}")
-            obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=path)
-            df = pd.read_csv(StringIO(obj['Body'].read().decode('utf-8')), low_memory=True)
-            if optimize_memory:
-                df = optimize_dtypes(df)
-            gc.collect()
-            return df
-        except Exception as e:
-            raise Exception(f"Could not read {path} from S3: {e}")
+    if not os.path.isabs(BUCKET_NAME):
+        client = get_s3_client()
+        if client:
+            try:
+                print(f"Reading from S3: s3://{BUCKET_NAME}/{path}")
+                obj = client.get_object(Bucket=BUCKET_NAME, Key=path)
+                df = pd.read_csv(StringIO(obj['Body'].read().decode('utf-8')), low_memory=True)
+                if optimize_memory:
+                    df = optimize_dtypes(df)
+                gc.collect()
+                return df
+            except Exception as e:
+                raise Exception(f"Could not read {path} from S3: {e}")
 
     raise Exception(f"Could not read {path} - file not found locally and S3 not available")
 
@@ -236,9 +246,12 @@ if __name__ == "__main__":
             # AWS execution - BUCKET_NAME is an S3 bucket
             print(f"Writing output to S3: s3://{BUCKET_NAME}/{OUTPUT_PATH}")
             try:
+                client = get_s3_client()
+                if not client:
+                    raise Exception("boto3 not available for S3 upload")
                 csv_buffer = StringIO()
                 result.to_csv(csv_buffer, index=False)
-                s3_client.put_object(
+                client.put_object(
                     Bucket=BUCKET_NAME,
                     Key=OUTPUT_PATH,
                     Body=csv_buffer.getvalue().encode('utf-8')
