@@ -177,6 +177,8 @@ async function downloadFromS3(key: string, destinationPath: string): Promise<voi
   const { pipeline } = await import('stream/promises');
 
   try {
+    console.log(`Downloading from S3: bucket=${BUCKET_NAME}, key=${key}`);
+
     const response = await s3Client.send(
       new GetObjectCommand({
         Bucket: BUCKET_NAME,
@@ -184,14 +186,22 @@ async function downloadFromS3(key: string, destinationPath: string): Promise<voi
       })
     );
 
+    if (!response.Body) {
+      throw new Error(`S3 response has no body for key: ${key}`);
+    }
+
+    console.log(`S3 response received, ContentLength: ${response.ContentLength || 'unknown'}`);
+
     const readable = response.Body as any;
     const writable = createWriteStream(destinationPath);
 
     // Stream directly to disk - never buffer entire file in memory
     await pipeline(readable, writable);
+
+    console.log(`Successfully wrote ${key} to ${destinationPath}`);
   } catch (error) {
     console.error(`Failed to download ${key} from S3:`, error);
-    throw error;
+    throw new Error(`S3 download failed for ${key}: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -493,22 +503,47 @@ export async function POST(request: NextRequest) {
               mkdirSync(inputDir, { recursive: true });
 
               for (const file of inputNode.files) {
-                const localInputPath = join(inputDir, file.id);
-                await downloadFromS3(file.id, localInputPath);
+                sendEvent('log', {
+                  type: 'info',
+                  message: `Downloading ${file.name || file.id} from S3...`
+                });
 
-                // Validate file size after download
-                const validation = validateInputFileSize(localInputPath, file.name || file.id);
-                if (!validation.valid) {
-                  sendEvent('error', { message: validation.error });
-                  // Clean up downloaded file
-                  try { unlinkSync(localInputPath); } catch {}
+                const localInputPath = join(inputDir, file.id);
+
+                try {
+                  await downloadFromS3(file.id, localInputPath);
+
+                  // Check if file was downloaded successfully
+                  if (!existsSync(localInputPath)) {
+                    throw new Error(`File was not created at ${localInputPath}`);
+                  }
+
+                  const fileStats = statSync(localInputPath);
+                  sendEvent('log', {
+                    type: 'info',
+                    message: `Downloaded ${file.name || file.id} (${(fileStats.size / 1024).toFixed(1)}KB)`
+                  });
+
+                  // Validate file size after download
+                  const validation = validateInputFileSize(localInputPath, file.name || file.id);
+                  if (!validation.valid) {
+                    sendEvent('error', { message: validation.error });
+                    // Clean up downloaded file
+                    try { unlinkSync(localInputPath); } catch {}
+                    controller.close();
+                    return;
+                  }
+                  totalInputSize += validation.size;
+                } catch (downloadError) {
+                  sendEvent('error', {
+                    message: `Failed to download ${file.name || file.id} from S3: ${downloadError instanceof Error ? downloadError.message : 'Unknown error'}`
+                  });
                   controller.close();
                   return;
                 }
-                totalInputSize += validation.size;
               }
             } catch (error) {
-              sendEvent('error', { message: `Failed to download input files` });
+              sendEvent('error', { message: `Failed to prepare input files: ${error instanceof Error ? error.message : 'Unknown error'}` });
               controller.close();
               return;
             }

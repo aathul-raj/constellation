@@ -134,28 +134,47 @@ def read_csv_smart(path, optimize_memory=True):
             file_size = os.path.getsize(path)
             file_size_mb = file_size / (1024 * 1024)
 
-            if file_size_mb > 100:
-                # Large file: read in chunks and concatenate
-                print(f"Large file detected ({file_size_mb:.1f}MB), using chunked reading...")
-                chunks = []
-                for chunk in pd.read_csv(path, chunksize=50000, low_memory=True):
-                    if optimize_memory:
-                        chunk = optimize_dtypes(chunk)
-                    chunks.append(chunk)
-                    gc.collect()
-                df = pd.concat(chunks, ignore_index=True)
-                del chunks
-                gc.collect()
-            else:
-                # Normal file: read directly with memory optimization
-                df = pd.read_csv(path, low_memory=True)
-                if optimize_memory:
-                    df = optimize_dtypes(df)
+            # Try with C engine first, fall back to Python engine if it fails
+            engines_to_try = ['c', 'python']
+            last_error = None
 
-            gc.collect()
-            return df
+            for engine in engines_to_try:
+                try:
+                    if file_size_mb > 100:
+                        # Large file: read in chunks and concatenate
+                        print(f"Large file detected ({file_size_mb:.1f}MB), using chunked reading with {engine} engine...")
+                        chunks = []
+                        for chunk in pd.read_csv(path, chunksize=50000, low_memory=True, engine=engine, on_bad_lines='skip'):
+                            if optimize_memory:
+                                chunk = optimize_dtypes(chunk)
+                            chunks.append(chunk)
+                            gc.collect()
+                        df = pd.concat(chunks, ignore_index=True)
+                        del chunks
+                        gc.collect()
+                    else:
+                        # Normal file: read directly with memory optimization
+                        df = pd.read_csv(path, low_memory=True, engine=engine, on_bad_lines='skip')
+                        if optimize_memory:
+                            df = optimize_dtypes(df)
+
+                    gc.collect()
+                    return df
+                except Exception as e:
+                    last_error = e
+                    if engine == 'c':
+                        print(f"C engine failed for {path}, trying Python engine...")
+                        continue
+                    else:
+                        raise
+
+            # If both engines failed
+            if last_error:
+                raise last_error
+
         except Exception as e:
-            print(f"Warning: Could not read {path} locally: {e}")
+            # If file exists but can't be read, raise the actual error
+            raise Exception(f"Could not parse CSV file {path}: {str(e)}")
 
     # If path is absolute, don't try S3 (user is running locally)
     if os.path.isabs(path):
