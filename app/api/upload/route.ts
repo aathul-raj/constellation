@@ -52,7 +52,8 @@ export async function POST(request: NextRequest) {
           const result = await uploadFile(csvBuffer, fileName);
           uploadedFiles.push({
             ...result,
-            originalName
+            originalName,
+            size: csvBuffer.length
           });
         }
 
@@ -73,7 +74,10 @@ export async function POST(request: NextRequest) {
       const fileName = `${Date.now()}-${file.name}`;
       const result = await uploadFile(buffer, fileName);
 
-      return NextResponse.json(result, { status: 200 });
+      return NextResponse.json({
+        ...result,
+        size: buffer.length
+      }, { status: 200 });
     }
   } catch (error) {
     console.error('Upload error:', error);

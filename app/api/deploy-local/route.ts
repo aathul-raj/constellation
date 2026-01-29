@@ -384,6 +384,31 @@ export async function POST(request: NextRequest) {
           return;
         }
 
+        // Check for large files (> 50MB) that should use AWS Batch instead
+        const MAX_LOCAL_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+        const allInputFileNodes = graph.nodes.filter((n: any) => n.type === 'input-file');
+        const largeFiles: string[] = [];
+
+        for (const inputNode of allInputFileNodes) {
+          if (inputNode.files && Array.isArray(inputNode.files)) {
+            for (const file of inputNode.files) {
+              // Check file metadata for size
+              if (file.metadata?.size && file.metadata.size > MAX_LOCAL_FILE_SIZE) {
+                const sizeMB = (file.metadata.size / 1024 / 1024).toFixed(1);
+                largeFiles.push(`${file.name} (${sizeMB}MB)`);
+              }
+            }
+          }
+        }
+
+        if (largeFiles.length > 0) {
+          sendEvent('error', {
+            message: `Files too large for local deployment: ${largeFiles.join(', ')}. Please use AWS Batch deployment for files > 50MB.`
+          });
+          controller.close();
+          return;
+        }
+
         // Check available disk space (need at least 500MB for safety)
         const availableSpace = getAvailableDiskSpace();
         const minRequiredSpace = 500 * 1024 * 1024; // 500MB (reduced since we wipe tmp each run)

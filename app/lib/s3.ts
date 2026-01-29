@@ -1,4 +1,4 @@
-import { S3Client, GetObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, ListObjectsV2Command, DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
 
@@ -192,4 +192,34 @@ export async function deleteFile(fileKey: string): Promise<void> {
   });
 
   await s3Client.send(command);
+}
+
+/**
+ * Generate a presigned URL for direct browser upload to S3
+ * This allows large files to bypass the Railway server entirely
+ */
+export async function generatePresignedUploadUrl(
+  fileName: string,
+  contentType: string = 'text/csv'
+): Promise<{ uploadUrl: string; key: string; bucket: string }> {
+  if (!bucketName) {
+    throw new Error('S3_BUCKET_NAME not configured');
+  }
+
+  const key = `${Date.now()}-${fileName}`;
+
+  const command = new PutObjectCommand({
+    Bucket: bucketName,
+    Key: key,
+    ContentType: contentType,
+  });
+
+  // Generate presigned URL that expires in 1 hour
+  const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+
+  return {
+    uploadUrl,
+    key,
+    bucket: bucketName,
+  };
 }

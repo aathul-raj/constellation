@@ -1199,10 +1199,12 @@ export default function EditorPanel() {
     setUploadingNodeId(selectedNodeId);
     setUploadProgress(0);
 
+    const MAX_RAILWAY_SIZE = 50 * 1024 * 1024; // 50MB - files larger go directly to S3
+
     try {
       for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
         const file = files[fileIdx];
-        
+
         // Only accept CSV and ZIP files
         if (!file.name.endsWith('.csv') && !file.name.endsWith('.zip')) {
           addNotification({
@@ -1213,10 +1215,103 @@ export default function EditorPanel() {
           continue;
         }
 
-        // Upload to AWS using XMLHttpRequest for progress tracking
+        const isLargeFile = file.size > MAX_RAILWAY_SIZE;
         const uploadStartTime = Date.now();
         const uploadCompleteProgress = .7; // Cap upload at 70%
 
+        // LARGE FILES: Upload directly to S3 using presigned URL
+        if (isLargeFile) {
+          await new Promise<void>(async (resolve, reject) => {
+            try {
+              // Step 1: Get presigned URL from Railway
+              setUploadProgress(5);
+              const presignedResponse = await fetch('/api/presigned-upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  fileName: file.name,
+                  contentType: file.type || 'text/csv'
+                })
+              });
+
+              if (!presignedResponse.ok) {
+                throw new Error('Failed to get upload URL');
+              }
+
+              const { uploadUrl, key } = await presignedResponse.json();
+
+              // Step 2: Upload directly to S3 with progress tracking
+              const xhr = new XMLHttpRequest();
+
+              xhr.upload.addEventListener('progress', (e: ProgressEvent) => {
+                if (e.lengthComputable) {
+                  const uploadPercent = (e.loaded / e.total) * 100;
+                  const scaledProgress = (uploadPercent / files.length) * uploadCompleteProgress;
+                  const fileOffsetProgress = (fileIdx / files.length) * uploadCompleteProgress;
+                  setUploadProgress(Math.round(fileOffsetProgress + scaledProgress));
+                }
+              });
+
+              xhr.addEventListener('load', async () => {
+                if (xhr.status === 200) {
+                  try {
+                    setUploadProgress(uploadCompleteProgress);
+
+                    // Step 3: Analyze the file (fetch from S3 and analyze)
+                    setUploadProgress(Math.round(uploadCompleteProgress + 15));
+
+                    const fileResponse = await fetch(`/api/files/${encodeURIComponent(key)}`);
+                    const fileBlob = await fileResponse.blob();
+                    const csvFile = new File([fileBlob], file.name, { type: 'text/csv' });
+
+                    const analyzeFormData = new FormData();
+                    analyzeFormData.append('file', csvFile);
+
+                    const analyzeResponse = await fetch('/api/analyze-file', {
+                      method: 'POST',
+                      body: analyzeFormData
+                    });
+
+                    const metadata = await analyzeResponse.json();
+
+                    // Add file to node
+                    addNodeFile(selectedNodeId, {
+                      id: key,
+                      name: file.name,
+                      metadata: metadata
+                    });
+
+                    addNotification({
+                      type: 'success',
+                      title: 'Large File Uploaded',
+                      message: `${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) uploaded directly to S3. Use AWS Batch for execution.`
+                    });
+
+                    setUploadProgress(Math.round(((fileIdx + 1) / files.length) * 100));
+                    resolve();
+                  } catch (error) {
+                    reject(error);
+                  }
+                } else {
+                  reject(new Error('S3 upload failed'));
+                }
+              });
+
+              xhr.addEventListener('error', () => {
+                reject(new Error('S3 upload failed'));
+              });
+
+              xhr.open('PUT', uploadUrl);
+              xhr.setRequestHeader('Content-Type', file.type || 'text/csv');
+              xhr.send(file);
+            } catch (error) {
+              reject(error);
+            }
+          });
+          continue; // Move to next file
+        }
+
+        // SMALL FILES: Upload through Railway (existing flow)
         await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           const uploadFormData = new FormData();

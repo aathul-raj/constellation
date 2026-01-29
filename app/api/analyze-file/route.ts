@@ -76,6 +76,7 @@ function analyzeCSV(content: string, fileName: string) {
   return {
     fileName,
     fileType: 'csv',
+    size: content.length,
     rowCount: lines.length - 1, // excluding header
     columns: header,
     columnTypes,
